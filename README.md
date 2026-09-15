@@ -1,3 +1,3 @@
-# szstd
+# osmo
 
-Pure Rust zstd compressor and decompressor. Zero dependencies.
+Pure Rust zstd and osmo compressor and decompressor. Zero dependencies.

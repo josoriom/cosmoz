@@ -1,14 +1,16 @@
 [package]
-name = "szstd"
+name = "osmo"
 version = "0.1.0"
 edition = "2024"
 
 [lib]
-crate-type = ["rlib", "cdylib"]
+crate-type = ["rlib"]
 
 [features]
-default = ["std"]
-std = []
+default = []
+alloc = []
+std = ["alloc"]
+parallel = ["std"]
 
 [dependencies]
 

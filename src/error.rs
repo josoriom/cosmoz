@@ -13,5 +13,6 @@ pub enum DecodeError {
     BadFseTable,
     BadSequencesHeader,
     BadOffset,
+    CorruptBitstream,
     ChecksumMismatch,
 }

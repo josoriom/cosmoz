@@ -10,7 +10,7 @@ impl<'input> BackwardBitReader<'input> {
     pub fn new(input: &'input [u8]) -> Result<Self, DecodeError> {
         let last_byte = *input.last().ok_or(DecodeError::InputTooShort)?;
         let padding_bit_position =
-            find_padding_bit_position(last_byte).ok_or(DecodeError::BadSequencesHeader)?;
+            find_padding_bit_position(last_byte).ok_or(DecodeError::CorruptBitstream)?;
         let bytes_before_last_byte = input.len() - 1;
         let bits_before_last_byte = bytes_before_last_byte
             .checked_mul(8)
@@ -131,9 +131,9 @@ mod tests {
     }
 
     #[test]
-    fn last_byte_of_zero_is_rejected_as_bad_sequences_header() {
+    fn last_byte_of_zero_is_rejected_as_corrupt_bitstream() {
         let result = BackwardBitReader::new(&[0x01, 0x00]);
-        assert!(matches!(result, Err(DecodeError::BadSequencesHeader)));
+        assert!(matches!(result, Err(DecodeError::CorruptBitstream)));
     }
 
     #[test]

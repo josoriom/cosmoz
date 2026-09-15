@@ -1,6 +1,7 @@
-#![cfg_attr(not(feature = "std"), no_std)]
+#![cfg_attr(not(any(feature = "std", test)), no_std)]
 
 pub mod bits;
+pub mod entropy;
 pub mod error;
 pub mod frame;
 pub mod hash;

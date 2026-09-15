@@ -1,12 +1,22 @@
 use crate::error::DecodeError;
 
-pub const MAGIC_NUMBER: u32 = 0xFD2FB528;
+pub const ZSTD_MAGIC_NUMBER: u32 = 0xFD2FB528;
+pub const OSMO_MAGIC_NUMBER: u32 = 0x4F4D534F;
 pub const SKIPPABLE_MAGIC_MASK: u32 = 0xFFFFFFF0;
 pub const SKIPPABLE_MAGIC_BASE: u32 = 0x184D2A50;
 pub const MAX_WINDOW_SIZE: u64 = 1 << 31;
+pub const ZSTD_CHECKSUM_LENGTH: usize = 4;
+pub const OSMO_CHECKSUM_LENGTH: usize = 8;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameFormat {
+    Zstd,
+    Osmo,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameHeader {
+    pub format: FrameFormat,
     pub window_size: u64,
     pub content_size: Option<u64>,
     pub dictionary_id: u32,
@@ -15,14 +25,32 @@ pub struct FrameHeader {
     pub header_length: usize,
 }
 
+impl FrameHeader {
+    pub fn checksum_length(&self) -> usize {
+        if !self.has_checksum {
+            return 0;
+        }
+        match self.format {
+            FrameFormat::Zstd => ZSTD_CHECKSUM_LENGTH,
+            FrameFormat::Osmo => OSMO_CHECKSUM_LENGTH,
+        }
+    }
+}
+
+fn read_frame_format(magic_number: u32) -> Result<FrameFormat, DecodeError> {
+    match magic_number {
+        ZSTD_MAGIC_NUMBER => Ok(FrameFormat::Zstd),
+        OSMO_MAGIC_NUMBER => Ok(FrameFormat::Osmo),
+        _ => Err(DecodeError::BadMagicNumber),
+    }
+}
+
 pub fn read_frame_header(input: &[u8]) -> Result<FrameHeader, DecodeError> {
     if input.len() < 4 {
         return Err(DecodeError::InputTooShort);
     }
     let magic_number = read_little_endian_u32(&input[0..4]);
-    if magic_number != MAGIC_NUMBER {
-        return Err(DecodeError::BadMagicNumber);
-    }
+    let format = read_frame_format(magic_number)?;
     if input.len() < 5 {
         return Err(DecodeError::InputTooShort);
     }
@@ -86,6 +114,7 @@ pub fn read_frame_header(input: &[u8]) -> Result<FrameHeader, DecodeError> {
     }
 
     Ok(FrameHeader {
+        format,
         window_size,
         content_size,
         dictionary_id,
@@ -195,6 +224,7 @@ mod tests {
         assert_eq!(
             frame_header,
             FrameHeader {
+                format: FrameFormat::Zstd,
                 window_size: 64,
                 content_size: Some(64),
                 dictionary_id: 0,
@@ -212,6 +242,7 @@ mod tests {
         assert_eq!(
             frame_header,
             FrameHeader {
+                format: FrameFormat::Zstd,
                 window_size: 1 << 21,
                 content_size: None,
                 dictionary_id: 0,
@@ -238,6 +269,7 @@ mod tests {
         assert_eq!(
             frame_header,
             FrameHeader {
+                format: FrameFormat::Zstd,
                 window_size: 10,
                 content_size: Some(10),
                 dictionary_id: 0,
@@ -255,6 +287,48 @@ mod tests {
         assert_eq!(frame_header.content_size, Some(10 + 256));
         assert_eq!(frame_header.window_size, 10 + 256);
         assert_eq!(frame_header.header_length, 7);
+    }
+
+    #[test]
+    fn reads_osmo_frame_header() {
+        let input = [0x4F, 0x53, 0x4D, 0x4F, 0x24, 0x40];
+        let frame_header = read_frame_header(&input).unwrap();
+        assert_eq!(
+            frame_header,
+            FrameHeader {
+                format: FrameFormat::Osmo,
+                window_size: 64,
+                content_size: Some(64),
+                dictionary_id: 0,
+                has_checksum: true,
+                single_segment: true,
+                header_length: 6,
+            }
+        );
+        assert_eq!(frame_header.checksum_length(), 8);
+    }
+
+    #[test]
+    fn checksum_length_depends_on_format_and_flag() {
+        let zstd_with_checksum = read_frame_header(&ZSTD_LEVEL_ONE_HEADER).unwrap();
+        assert_eq!(zstd_with_checksum.checksum_length(), 4);
+
+        let zstd_without_checksum =
+            read_frame_header(&[0x28, 0xB5, 0x2F, 0xFD, 0x00, 0x58]).unwrap();
+        assert_eq!(zstd_without_checksum.checksum_length(), 0);
+
+        let osmo_with_checksum = read_frame_header(&[0x4F, 0x53, 0x4D, 0x4F, 0x24, 0x40]).unwrap();
+        assert_eq!(osmo_with_checksum.checksum_length(), 8);
+
+        let osmo_without_checksum =
+            read_frame_header(&[0x4F, 0x53, 0x4D, 0x4F, 0x20, 0x0A]).unwrap();
+        assert_eq!(osmo_without_checksum.checksum_length(), 0);
+    }
+
+    #[test]
+    fn rejects_magic_one_bit_away_from_osmo() {
+        let input = [0x4E, 0x53, 0x4D, 0x4F, 0x24, 0x40];
+        assert_eq!(read_frame_header(&input), Err(DecodeError::BadMagicNumber));
     }
 
     #[test]
