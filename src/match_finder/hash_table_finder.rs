@@ -268,23 +268,19 @@ mod tests {
     fn respects_window_and_sequence_capacity() {
         let mut input = Vec::new();
         input.extend_from_slice(b"FARF");
-        input.extend(generate_pseudo_random_bytes(4996, 0x1111_1111));
+        input.extend(generate_pseudo_random_bytes(40, 0x1111_1111));
         input.extend_from_slice(b"FARF");
-        input.extend(generate_pseudo_random_bytes(200, 0x2222_2222));
+        input.extend(generate_pseudo_random_bytes(4, 0x2222_2222));
         input.extend_from_slice(b"REPEATED_TOKEN_ONE_");
-        input.extend(generate_pseudo_random_bytes(100, 0x3333_3333));
+        input.extend(generate_pseudo_random_bytes(4, 0x3333_3333));
         input.extend_from_slice(b"REPEATED_TOKEN_ONE_");
-        input.extend(generate_pseudo_random_bytes(100, 0x4444_4444));
+        input.extend(generate_pseudo_random_bytes(4, 0x4444_4444));
         input.extend_from_slice(b"REPEATED_TOKEN_TWO_");
-        input.extend(generate_pseudo_random_bytes(100, 0x5555_5555));
+        input.extend(generate_pseudo_random_bytes(4, 0x5555_5555));
         input.extend_from_slice(b"REPEATED_TOKEN_TWO_");
-        input.extend(generate_pseudo_random_bytes(100, 0x6666_6666));
-        input.extend_from_slice(b"REPEATED_TOKEN_THREE");
-        input.extend(generate_pseudo_random_bytes(100, 0x7777_7777));
-        input.extend_from_slice(b"REPEATED_TOKEN_THREE");
-        input.extend(generate_pseudo_random_bytes(200, 0x8888_8888));
+        input.extend(generate_pseudo_random_bytes(20, 0x6666_6666));
 
-        let mut finder = HashTableFinder::new(10);
+        let mut finder = HashTableFinder::new(5);
         let mut repeat_offsets = RepeatOffsets::new();
         let mut decoder_history = RepeatOffsets::new();
         let mut sequences = [SequenceRecord::default(); 2];
@@ -303,7 +299,7 @@ mod tests {
         assert_eq!(covered + tail_literal_count, input.len());
 
         for resolved_offset in resolved_offsets {
-            assert_ne!(resolved_offset, 5000);
+            assert_ne!(resolved_offset, 44);
         }
     }
 

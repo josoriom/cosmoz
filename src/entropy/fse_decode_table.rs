@@ -51,15 +51,25 @@ impl FseDecodeState {
         Self { state }
     }
 
+    #[inline(always)]
     pub fn get_symbol(&self, table: &FseDecodeTable) -> u8 {
-        table.entries[self.state].symbol
+        debug_assert!(self.state < table.entries.len());
+        unsafe { get_entry_unchecked(table, self.state).symbol }
     }
 
+    #[inline(always)]
     pub fn update(&mut self, reader: &mut BackwardBitReader, table: &FseDecodeTable) {
-        let entry = table.entries[self.state];
+        debug_assert!(self.state < table.entries.len());
+        let entry = unsafe { get_entry_unchecked(table, self.state) };
         let read_bits = reader.read_bits(entry.bit_count as usize) as usize;
         self.state = entry.next_state_base as usize + read_bits;
     }
+}
+
+#[inline(always)]
+unsafe fn get_entry_unchecked(table: &FseDecodeTable, state: usize) -> FseDecodeEntry {
+    debug_assert!(state < table.entries.len());
+    unsafe { *table.entries.get_unchecked(state) }
 }
 
 pub fn read_fse_table_description(
@@ -234,4 +244,104 @@ fn get_spread_step(table_size: usize) -> usize {
 
 fn count_bits_needed(value: usize) -> usize {
     (usize::BITS - value.leading_zeros()) as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_fse_decode_table_matches_a_hand_computed_table() {
+        let counts: [i16; 4] = [8, 4, 2, 2];
+        let mut table = FseDecodeTable::new();
+        build_fse_decode_table(&counts, 4, &mut table).unwrap();
+
+        let expected: [(u8, u8, u16); 16] = [
+            (0, 1, 0),
+            (0, 1, 2),
+            (1, 2, 0),
+            (3, 3, 0),
+            (0, 1, 4),
+            (1, 2, 4),
+            (3, 3, 8),
+            (0, 1, 6),
+            (1, 2, 8),
+            (2, 3, 0),
+            (0, 1, 8),
+            (0, 1, 10),
+            (2, 3, 8),
+            (0, 1, 12),
+            (0, 1, 14),
+            (1, 2, 12),
+        ];
+
+        for (cell_index, (symbol, bit_count, next_state_base)) in expected.into_iter().enumerate() {
+            let entry = table.entries[cell_index];
+            assert_eq!(entry.symbol, symbol, "cell {cell_index} symbol");
+            assert_eq!(entry.bit_count, bit_count, "cell {cell_index} bit_count");
+            assert_eq!(
+                entry.next_state_base, next_state_base,
+                "cell {cell_index} next_state_base"
+            );
+        }
+        assert_eq!(table.accuracy_log, 4);
+        assert_eq!(table.table_size(), 16);
+    }
+
+    #[test]
+    fn a_less_than_one_symbol_lands_at_the_last_cell_with_full_bit_count() {
+        let counts: [i16; 5] = [7, 4, 2, 2, -1];
+        let mut table = FseDecodeTable::new();
+        build_fse_decode_table(&counts, 4, &mut table).unwrap();
+
+        let last_cell = table.entries[table.table_size() - 1];
+        assert_eq!(last_cell.symbol, 4);
+        assert_eq!(last_cell.bit_count, table.accuracy_log);
+        assert_eq!(last_cell.next_state_base, 0);
+    }
+
+    #[test]
+    fn reads_a_hand_encoded_table_description() {
+        let input = [0x10u8, 0xfd];
+        let mut table = FseDecodeTable::new();
+
+        let bytes_consumed =
+            read_fse_table_description(&input, MAX_ACCURACY_LOG, 2, &mut table).unwrap();
+
+        assert_eq!(bytes_consumed, 2);
+        assert_eq!(table.accuracy_log, 5);
+        assert_eq!(table.table_size(), 32);
+    }
+
+    #[test]
+    fn rejects_an_accuracy_log_above_the_caller_supplied_maximum() {
+        let input = [0x00u8, 0x00];
+        let mut table = FseDecodeTable::new();
+
+        let result = read_fse_table_description(&input, 4, 2, &mut table);
+
+        assert_eq!(result, Err(DecodeError::BadFseTable));
+    }
+
+    #[test]
+    fn rejects_more_symbols_than_the_caller_expects() {
+        let input = [0x10u8, 0xfd];
+        let mut table = FseDecodeTable::new();
+
+        let result = read_fse_table_description(&input, MAX_ACCURACY_LOG, 0, &mut table);
+
+        assert_eq!(result, Err(DecodeError::BadFseTable));
+    }
+
+    #[test]
+    fn build_rle_table_produces_a_single_zero_bit_cell() {
+        let mut table = FseDecodeTable::new();
+        build_rle_table(7, &mut table);
+
+        assert_eq!(table.accuracy_log, 0);
+        assert_eq!(table.table_size(), 1);
+        assert_eq!(table.entries[0].symbol, 7);
+        assert_eq!(table.entries[0].bit_count, 0);
+        assert_eq!(table.entries[0].next_state_base, 0);
+    }
 }

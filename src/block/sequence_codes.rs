@@ -49,116 +49,40 @@ const MATCH_LENGTH_EXTRA_BASE: [(u32, u8); 21] = [
     (65539, 16),
 ];
 
-const fn build_literal_length_base_table() -> [u32; LITERAL_LENGTH_CODE_COUNT] {
-    let mut table = [0u32; LITERAL_LENGTH_CODE_COUNT];
-    let mut code = 0usize;
-    while code < LITERAL_LENGTH_CODE_COUNT {
-        table[code] = if code <= 15 {
-            code as u32
-        } else {
-            LITERAL_LENGTH_EXTRA_BASE[code - 16].0
-        };
-        code += 1;
-    }
-    table
-}
-
-const fn build_literal_length_extra_bits_table() -> [u8; LITERAL_LENGTH_CODE_COUNT] {
-    let mut table = [0u8; LITERAL_LENGTH_CODE_COUNT];
-    let mut code = 0usize;
-    while code < LITERAL_LENGTH_CODE_COUNT {
-        table[code] = if code <= 15 {
-            0
-        } else {
-            LITERAL_LENGTH_EXTRA_BASE[code - 16].1
-        };
-        code += 1;
-    }
-    table
-}
-
-const fn build_match_length_base_table() -> [u32; MATCH_LENGTH_CODE_COUNT] {
-    let mut table = [0u32; MATCH_LENGTH_CODE_COUNT];
-    let mut code = 0usize;
-    while code < MATCH_LENGTH_CODE_COUNT {
-        table[code] = if code <= 31 {
-            code as u32 + 3
-        } else {
-            MATCH_LENGTH_EXTRA_BASE[code - 32].0
-        };
-        code += 1;
-    }
-    table
-}
-
-const fn build_match_length_extra_bits_table() -> [u8; MATCH_LENGTH_CODE_COUNT] {
-    let mut table = [0u8; MATCH_LENGTH_CODE_COUNT];
-    let mut code = 0usize;
-    while code < MATCH_LENGTH_CODE_COUNT {
-        table[code] = if code <= 31 {
-            0
-        } else {
-            MATCH_LENGTH_EXTRA_BASE[code - 32].1
-        };
-        code += 1;
-    }
-    table
-}
-
-const LITERAL_LENGTH_BASE_TABLE: [u32; LITERAL_LENGTH_CODE_COUNT] =
-    build_literal_length_base_table();
-const LITERAL_LENGTH_EXTRA_BITS_TABLE: [u8; LITERAL_LENGTH_CODE_COUNT] =
-    build_literal_length_extra_bits_table();
-const MATCH_LENGTH_BASE_TABLE: [u32; MATCH_LENGTH_CODE_COUNT] = build_match_length_base_table();
-const MATCH_LENGTH_EXTRA_BITS_TABLE: [u8; MATCH_LENGTH_CODE_COUNT] =
-    build_match_length_extra_bits_table();
-
-#[inline(always)]
-unsafe fn get_literal_length_base_unchecked(code: u8) -> u32 {
-    debug_assert!((code as usize) < LITERAL_LENGTH_CODE_COUNT);
-    unsafe { *LITERAL_LENGTH_BASE_TABLE.get_unchecked(code as usize) }
-}
-
-#[inline(always)]
-unsafe fn get_literal_length_extra_bits_unchecked(code: u8) -> u8 {
-    debug_assert!((code as usize) < LITERAL_LENGTH_CODE_COUNT);
-    unsafe { *LITERAL_LENGTH_EXTRA_BITS_TABLE.get_unchecked(code as usize) }
-}
-
-#[inline(always)]
-unsafe fn get_match_length_base_unchecked(code: u8) -> u32 {
-    debug_assert!((code as usize) < MATCH_LENGTH_CODE_COUNT);
-    unsafe { *MATCH_LENGTH_BASE_TABLE.get_unchecked(code as usize) }
-}
-
-#[inline(always)]
-unsafe fn get_match_length_extra_bits_unchecked(code: u8) -> u8 {
-    debug_assert!((code as usize) < MATCH_LENGTH_CODE_COUNT);
-    unsafe { *MATCH_LENGTH_EXTRA_BITS_TABLE.get_unchecked(code as usize) }
-}
-
-#[inline(always)]
 pub fn get_literal_length_base(code: u8) -> u32 {
-    debug_assert!((code as usize) < LITERAL_LENGTH_CODE_COUNT);
-    unsafe { get_literal_length_base_unchecked(code) }
+    let code = (code as usize).min(LITERAL_LENGTH_CODE_COUNT - 1);
+    if code <= 15 {
+        code as u32
+    } else {
+        LITERAL_LENGTH_EXTRA_BASE[code - 16].0
+    }
 }
 
-#[inline(always)]
 pub fn get_literal_length_extra_bits(code: u8) -> u8 {
-    debug_assert!((code as usize) < LITERAL_LENGTH_CODE_COUNT);
-    unsafe { get_literal_length_extra_bits_unchecked(code) }
+    let code = (code as usize).min(LITERAL_LENGTH_CODE_COUNT - 1);
+    if code <= 15 {
+        0
+    } else {
+        LITERAL_LENGTH_EXTRA_BASE[code - 16].1
+    }
 }
 
-#[inline(always)]
 pub fn get_match_length_base(code: u8) -> u32 {
-    debug_assert!((code as usize) < MATCH_LENGTH_CODE_COUNT);
-    unsafe { get_match_length_base_unchecked(code) }
+    let code = (code as usize).min(MATCH_LENGTH_CODE_COUNT - 1);
+    if code <= 31 {
+        code as u32 + 3
+    } else {
+        MATCH_LENGTH_EXTRA_BASE[code - 32].0
+    }
 }
 
-#[inline(always)]
 pub fn get_match_length_extra_bits(code: u8) -> u8 {
-    debug_assert!((code as usize) < MATCH_LENGTH_CODE_COUNT);
-    unsafe { get_match_length_extra_bits_unchecked(code) }
+    let code = (code as usize).min(MATCH_LENGTH_CODE_COUNT - 1);
+    if code <= 31 {
+        0
+    } else {
+        MATCH_LENGTH_EXTRA_BASE[code - 32].1
+    }
 }
 
 pub const MAX_LITERAL_LENGTH: u32 = 131071;

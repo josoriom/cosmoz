@@ -238,12 +238,10 @@ pub extern "C" fn osmo_run_self_tests() -> i64 {
         crate::simd::histogram::run_self_tests,
         crate::simd::xxhash3_stripes::run_self_tests,
     ];
-    let mut kernel_index = 0i64;
-    for kernel in kernels {
+    for (kernel_index, kernel) in kernels.into_iter().enumerate() {
         if let Some(test_number) = kernel() {
-            return 1000 * kernel_index + test_number as i64;
+            return 1000 * kernel_index as i64 + test_number as i64;
         }
-        kernel_index += 1;
     }
     0
 }
@@ -427,11 +425,11 @@ pub unsafe extern "C" fn osmo_write_chunk_index(
         compressed_length: 0,
         decompressed_length: 0,
     }; MAX_WASM_CHUNK_INDEX_ENTRIES];
-    for chunk_number in 0..chunk_count {
+    for (chunk_number, entry) in entries.iter_mut().enumerate().take(chunk_count) {
         let compressed_length = unsafe { entries_pointer.add(chunk_number * 2).read() } as usize;
         let decompressed_length =
             unsafe { entries_pointer.add(chunk_number * 2 + 1).read() } as usize;
-        entries[chunk_number] = ChunkEntry {
+        *entry = ChunkEntry {
             compressed_length,
             decompressed_length,
         };

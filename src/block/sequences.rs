@@ -365,3 +365,142 @@ impl<'input, 'tables> SequenceDecoder<'input, 'tables> {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn header_with_two_sequences_and_all_predefined_modes() {
+        let header = read_sequences_header(&[0x02, 0x00]).unwrap();
+        assert_eq!(header.sequence_count, 2);
+        assert_eq!(header.literal_length_mode, TableMode::Predefined);
+        assert_eq!(header.offset_mode, TableMode::Predefined);
+        assert_eq!(header.match_length_mode, TableMode::Predefined);
+        assert_eq!(header.header_length, 2);
+    }
+
+    #[test]
+    fn header_with_zero_sequences_has_no_modes_byte() {
+        let header = read_sequences_header(&[0x00]).unwrap();
+        assert_eq!(header.sequence_count, 0);
+        assert_eq!(header.literal_length_mode, TableMode::Predefined);
+        assert_eq!(header.offset_mode, TableMode::Predefined);
+        assert_eq!(header.match_length_mode, TableMode::Predefined);
+        assert_eq!(header.header_length, 1);
+    }
+
+    #[test]
+    fn header_with_three_byte_count_form() {
+        let byte1 = 0x40u8;
+        let byte2 = 0x01u8;
+        let expected_count = byte1 as usize + ((byte2 as usize) << 8) + 0x7F00;
+        let header = read_sequences_header(&[0xFF, byte1, byte2, 0x00]).unwrap();
+        assert_eq!(header.sequence_count, expected_count);
+        assert_eq!(header.header_length, 4);
+    }
+
+    #[test]
+    fn reserved_bits_set_is_rejected() {
+        let result = read_sequences_header(&[0x02, 0x01]);
+        assert!(matches!(result, Err(DecodeError::BadSequencesHeader)));
+    }
+
+    #[test]
+    fn all_predefined_tables_consume_no_bytes_and_become_ready() {
+        let header = SequencesHeader {
+            sequence_count: 5,
+            literal_length_mode: TableMode::Predefined,
+            offset_mode: TableMode::Predefined,
+            match_length_mode: TableMode::Predefined,
+            header_length: 2,
+        };
+        let mut tables = SequenceTables::new();
+        let bytes_consumed = read_sequence_tables(&[], &header, &mut tables).unwrap();
+        assert_eq!(bytes_consumed, 0);
+        assert!(tables.literal_length_ready);
+        assert!(tables.offset_ready);
+        assert!(tables.match_length_ready);
+    }
+
+    #[test]
+    fn repeat_mode_on_a_fresh_table_is_an_error() {
+        let header = SequencesHeader {
+            sequence_count: 5,
+            literal_length_mode: TableMode::Repeat,
+            offset_mode: TableMode::Predefined,
+            match_length_mode: TableMode::Predefined,
+            header_length: 2,
+        };
+        let mut tables = SequenceTables::new();
+        let result = read_sequence_tables(&[], &header, &mut tables);
+        assert!(matches!(result, Err(DecodeError::BadSequencesHeader)));
+    }
+
+    #[test]
+    fn decodes_sequences_from_a_real_zstd_level_one_block() {
+        let literal_pool = *b"abcxyzdef\n";
+        let sequences_section: [u8; 14] = [
+            0x05, 0x00, 0x40, 0x01, 0x3a, 0x36, 0x75, 0x10, 0x00, 0x60, 0x23, 0x99, 0xba, 0x21,
+        ];
+
+        let header = read_sequences_header(&sequences_section).unwrap();
+        assert_eq!(header.sequence_count, 5);
+        assert_eq!(header.literal_length_mode, TableMode::Predefined);
+        assert_eq!(header.offset_mode, TableMode::Predefined);
+        assert_eq!(header.match_length_mode, TableMode::Predefined);
+
+        let mut tables = SequenceTables::new();
+        let bitstream_start = header.header_length
+            + read_sequence_tables(
+                &sequences_section[header.header_length..],
+                &header,
+                &mut tables,
+            )
+            .unwrap();
+
+        let mut decoder = SequenceDecoder::new(
+            &sequences_section[bitstream_start..],
+            &tables,
+            header.sequence_count,
+            FrameFormat::Zstd,
+        )
+        .unwrap();
+
+        let mut repeat_offsets = RepeatOffsets::new();
+        let mut output: [u8; 199] = [0; 199];
+        let mut output_position = 0usize;
+        let mut literal_position = 0usize;
+        let mut decoded_count = 0usize;
+
+        while let Some(sequence) = decoder.next_sequence(&mut repeat_offsets) {
+            let sequence = sequence.unwrap();
+            decoded_count += 1;
+
+            for _ in 0..sequence.literal_length {
+                output[output_position] = literal_pool[literal_position];
+                output_position += 1;
+                literal_position += 1;
+            }
+
+            let offset = sequence.offset as usize;
+            for _ in 0..sequence.match_length {
+                output[output_position] = output[output_position - offset];
+                output_position += 1;
+            }
+        }
+
+        while literal_position < literal_pool.len() && output_position < output.len() {
+            output[output_position] = literal_pool[literal_position];
+            output_position += 1;
+            literal_position += 1;
+        }
+
+        assert!(decoder.is_finished());
+        assert_eq!(decoded_count, 5);
+        assert_eq!(output_position, 199);
+
+        let expected = b"abcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcxyzxyzxyzabcabcabcabcabcabcabcabcabcabcdefdefdefabcabcabcabcabcabcabcabcabcabcabcabcabc\n";
+        assert_eq!(&output[..], &expected[..199]);
+    }
+}
