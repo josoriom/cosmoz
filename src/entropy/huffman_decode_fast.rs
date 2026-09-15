@@ -2,10 +2,6 @@ use crate::bits::fast_bit_reader::{FastBitReader, ReloadStatus};
 use crate::entropy::huffman_decode_table::HuffmanDecodeTable;
 use crate::error::DecodeError;
 
-const FAST_LOOKUPS_PER_REFILL: usize = 4;
-const FAST_ITERATION_SLACK: usize = FAST_LOOKUPS_PER_REFILL * 2;
-const WINDOW_BITS: u32 = 12;
-
 unsafe fn make_reader_unchecked(
     stream: &[u8],
     padding_buffer: &mut [u8; 16],
@@ -18,55 +14,60 @@ unsafe fn make_reader_unchecked(
     }
 }
 
-unsafe fn decode_stream_double_table_unchecked(
-    reader: &mut FastBitReader,
+#[allow(clippy::needless_range_loop)]
+unsafe fn decode_streams_interleaved_unchecked<const STREAMS: usize>(
+    readers: &mut [FastBitReader; STREAMS],
     table: &HuffmanDecodeTable,
-    output: *mut u8,
-    segment_length: usize,
+    outputs: [*mut u8; STREAMS],
+    segment_lengths: [usize; STREAMS],
 ) {
     debug_assert!(table.is_ready);
-    let double_entries = &table.double_entries;
-    let mut position = 0usize;
+    let max_bits = table.max_bits as u32;
+    let lookups_per_refill = (57 / max_bits.max(1)) as usize;
+    let iteration_slack = lookups_per_refill * 2;
+    let single_entries = &table.entries;
+    let mut positions = [0usize; STREAMS];
 
-    loop {
-        if segment_length - position < FAST_ITERATION_SLACK {
-            break;
-        }
-        let status = unsafe { reader.refill_unchecked() };
-        if status != ReloadStatus::Unfinished {
-            break;
-        }
-        let mut lookup_index = 0usize;
-        while lookup_index < FAST_LOOKUPS_PER_REFILL {
-            let window = reader.peek(WINDOW_BITS) as usize;
-            debug_assert!(window < double_entries.len());
-            let entry = unsafe { *double_entries.get_unchecked(window) };
-            unsafe {
-                output
-                    .add(position)
-                    .cast::<[u8; 2]>()
-                    .write_unaligned(entry.symbols);
+    'batches: loop {
+        for stream in 0..STREAMS {
+            if segment_lengths[stream] - positions[stream] < iteration_slack {
+                break 'batches;
             }
-            reader.skip(entry.bit_count as u32);
-            position += entry.symbol_count as usize;
-            lookup_index += 1;
+        }
+        for stream in 0..STREAMS {
+            let status = unsafe { readers[stream].refill_unchecked() };
+            if status != ReloadStatus::Unfinished {
+                break 'batches;
+            }
+        }
+        for _ in 0..lookups_per_refill {
+            for stream in 0..STREAMS {
+                let index = readers[stream].peek(max_bits) as usize;
+                debug_assert!(index < single_entries.len());
+                let entry = unsafe { *single_entries.get_unchecked(index) };
+                unsafe {
+                    *outputs[stream].add(positions[stream]) = entry.symbol;
+                }
+                readers[stream].skip(entry.bit_count as u32);
+                positions[stream] += 1;
+            }
         }
     }
 
-    let max_bits = table.max_bits as u32;
-    let single_entries = &table.entries;
-    while position < segment_length {
-        unsafe {
-            let _ = reader.refill_unchecked();
+    for stream in 0..STREAMS {
+        while positions[stream] < segment_lengths[stream] {
+            unsafe {
+                let _ = readers[stream].refill_unchecked();
+            }
+            let index = peek_window_padded(&readers[stream], max_bits) as usize;
+            debug_assert!(index < single_entries.len());
+            let entry = unsafe { *single_entries.get_unchecked(index) };
+            unsafe {
+                *outputs[stream].add(positions[stream]) = entry.symbol;
+            }
+            readers[stream].skip(entry.bit_count as u32);
+            positions[stream] += 1;
         }
-        let index = peek_window_padded(reader, max_bits) as usize;
-        debug_assert!(index < single_entries.len());
-        let entry = unsafe { *single_entries.get_unchecked(index) };
-        unsafe {
-            *output.add(position) = entry.symbol;
-        }
-        reader.skip(entry.bit_count as u32);
-        position += 1;
     }
 }
 
@@ -91,47 +92,30 @@ pub(crate) unsafe fn decode_four_streams_unchecked(
 
     let mut padding_buffers = [[0u8; 16]; 4];
     let [padding_0, padding_1, padding_2, padding_3] = &mut padding_buffers;
-    let mut reader_0 = unsafe { make_reader_unchecked(streams[0], padding_0)? };
-    let mut reader_1 = unsafe { make_reader_unchecked(streams[1], padding_1)? };
-    let mut reader_2 = unsafe { make_reader_unchecked(streams[2], padding_2)? };
-    let mut reader_3 = unsafe { make_reader_unchecked(streams[3], padding_3)? };
+    let reader_0 = unsafe { make_reader_unchecked(streams[0], padding_0)? };
+    let reader_1 = unsafe { make_reader_unchecked(streams[1], padding_1)? };
+    let reader_2 = unsafe { make_reader_unchecked(streams[2], padding_2)? };
+    let reader_3 = unsafe { make_reader_unchecked(streams[3], padding_3)? };
 
     let offset_0 = 0usize;
     let offset_1 = offset_0 + segment_sizes[0];
     let offset_2 = offset_1 + segment_sizes[1];
     let offset_3 = offset_2 + segment_sizes[2];
 
-    unsafe {
-        decode_stream_double_table_unchecked(
-            &mut reader_0,
-            table,
+    let mut readers = [reader_0, reader_1, reader_2, reader_3];
+    let outputs = unsafe {
+        [
             output.add(offset_0),
-            segment_sizes[0],
-        );
-        decode_stream_double_table_unchecked(
-            &mut reader_1,
-            table,
             output.add(offset_1),
-            segment_sizes[1],
-        );
-        decode_stream_double_table_unchecked(
-            &mut reader_2,
-            table,
             output.add(offset_2),
-            segment_sizes[2],
-        );
-        decode_stream_double_table_unchecked(
-            &mut reader_3,
-            table,
             output.add(offset_3),
-            segment_sizes[3],
-        );
+        ]
+    };
+    unsafe {
+        decode_streams_interleaved_unchecked(&mut readers, table, outputs, segment_sizes);
     }
 
-    let all_finished = reader_0.is_finished()
-        && reader_1.is_finished()
-        && reader_2.is_finished()
-        && reader_3.is_finished();
+    let all_finished = readers.iter().all(|reader| reader.is_finished());
     if !all_finished {
         return Err(DecodeError::CorruptBitstream);
     }
@@ -159,14 +143,14 @@ pub(crate) unsafe fn decode_eight_streams_unchecked(
         padding_6,
         padding_7,
     ] = &mut padding_buffers;
-    let mut reader_0 = unsafe { make_reader_unchecked(streams[0], padding_0)? };
-    let mut reader_1 = unsafe { make_reader_unchecked(streams[1], padding_1)? };
-    let mut reader_2 = unsafe { make_reader_unchecked(streams[2], padding_2)? };
-    let mut reader_3 = unsafe { make_reader_unchecked(streams[3], padding_3)? };
-    let mut reader_4 = unsafe { make_reader_unchecked(streams[4], padding_4)? };
-    let mut reader_5 = unsafe { make_reader_unchecked(streams[5], padding_5)? };
-    let mut reader_6 = unsafe { make_reader_unchecked(streams[6], padding_6)? };
-    let mut reader_7 = unsafe { make_reader_unchecked(streams[7], padding_7)? };
+    let reader_0 = unsafe { make_reader_unchecked(streams[0], padding_0)? };
+    let reader_1 = unsafe { make_reader_unchecked(streams[1], padding_1)? };
+    let reader_2 = unsafe { make_reader_unchecked(streams[2], padding_2)? };
+    let reader_3 = unsafe { make_reader_unchecked(streams[3], padding_3)? };
+    let reader_4 = unsafe { make_reader_unchecked(streams[4], padding_4)? };
+    let reader_5 = unsafe { make_reader_unchecked(streams[5], padding_5)? };
+    let reader_6 = unsafe { make_reader_unchecked(streams[6], padding_6)? };
+    let reader_7 = unsafe { make_reader_unchecked(streams[7], padding_7)? };
 
     let offset_0 = 0usize;
     let offset_1 = offset_0 + segment_sizes[0];
@@ -177,65 +161,26 @@ pub(crate) unsafe fn decode_eight_streams_unchecked(
     let offset_6 = offset_5 + segment_sizes[5];
     let offset_7 = offset_6 + segment_sizes[6];
 
-    unsafe {
-        decode_stream_double_table_unchecked(
-            &mut reader_0,
-            table,
+    let mut readers = [
+        reader_0, reader_1, reader_2, reader_3, reader_4, reader_5, reader_6, reader_7,
+    ];
+    let outputs = unsafe {
+        [
             output.add(offset_0),
-            segment_sizes[0],
-        );
-        decode_stream_double_table_unchecked(
-            &mut reader_1,
-            table,
             output.add(offset_1),
-            segment_sizes[1],
-        );
-        decode_stream_double_table_unchecked(
-            &mut reader_2,
-            table,
             output.add(offset_2),
-            segment_sizes[2],
-        );
-        decode_stream_double_table_unchecked(
-            &mut reader_3,
-            table,
             output.add(offset_3),
-            segment_sizes[3],
-        );
-        decode_stream_double_table_unchecked(
-            &mut reader_4,
-            table,
             output.add(offset_4),
-            segment_sizes[4],
-        );
-        decode_stream_double_table_unchecked(
-            &mut reader_5,
-            table,
             output.add(offset_5),
-            segment_sizes[5],
-        );
-        decode_stream_double_table_unchecked(
-            &mut reader_6,
-            table,
             output.add(offset_6),
-            segment_sizes[6],
-        );
-        decode_stream_double_table_unchecked(
-            &mut reader_7,
-            table,
             output.add(offset_7),
-            segment_sizes[7],
-        );
+        ]
+    };
+    unsafe {
+        decode_streams_interleaved_unchecked(&mut readers, table, outputs, segment_sizes);
     }
 
-    let all_finished = reader_0.is_finished()
-        && reader_1.is_finished()
-        && reader_2.is_finished()
-        && reader_3.is_finished()
-        && reader_4.is_finished()
-        && reader_5.is_finished()
-        && reader_6.is_finished()
-        && reader_7.is_finished();
+    let all_finished = readers.iter().all(|reader| reader.is_finished());
     if !all_finished {
         return Err(DecodeError::CorruptBitstream);
     }
@@ -287,27 +232,64 @@ mod tests {
     fn build_tables(random: &mut XorshiftRandom) -> (HuffmanEncodeTable, HuffmanDecodeTable) {
         loop {
             let counts = build_random_histogram(random);
-            let mut encode_table = HuffmanEncodeTable::new();
-            if build_huffman_encode_table(&counts, &mut encode_table).is_err() {
-                continue;
+            if let Some(tables) = build_tables_from_counts(&counts) {
+                return tables;
             }
-
-            let mut weights_output = [0u8; 256];
-            let bytes_written = crate::entropy::huffman_encode_table::write_direct_weights(
-                &mut weights_output,
-                &encode_table,
-            )
-            .unwrap();
-            let mut decode_table = HuffmanDecodeTable::new();
-            let mut weight_fse_table = FseDecodeTable::new();
-            crate::entropy::huffman_decode_table::read_huffman_table(
-                &weights_output[..bytes_written],
-                &mut decode_table,
-                &mut weight_fse_table,
-            )
-            .unwrap();
-            return (encode_table, decode_table);
         }
+    }
+
+    fn build_tables_from_counts(
+        counts: &[u32; 256],
+    ) -> Option<(HuffmanEncodeTable, HuffmanDecodeTable)> {
+        let mut encode_table = HuffmanEncodeTable::new();
+        build_huffman_encode_table(counts, &mut encode_table).ok()?;
+
+        let mut weights_output = [0u8; 256];
+        let bytes_written = crate::entropy::huffman_encode_table::write_direct_weights(
+            &mut weights_output,
+            &encode_table,
+        )
+        .ok()?;
+        let mut decode_table = HuffmanDecodeTable::new();
+        let mut weight_fse_table = FseDecodeTable::new();
+        crate::entropy::huffman_decode_table::read_huffman_table(
+            &weights_output[..bytes_written],
+            &mut decode_table,
+            &mut weight_fse_table,
+        )
+        .ok()?;
+        Some((encode_table, decode_table))
+    }
+
+    fn build_table_with_max_bits(
+        random: &mut XorshiftRandom,
+        wanted_max_bits: u8,
+    ) -> (HuffmanEncodeTable, HuffmanDecodeTable) {
+        for _ in 0..20_000 {
+            let counts = build_random_histogram(random);
+            if let Some((encode_table, decode_table)) = build_tables_from_counts(&counts)
+                && decode_table.max_bits == wanted_max_bits
+            {
+                return (encode_table, decode_table);
+            }
+        }
+        if wanted_max_bits == 11 {
+            let mut counts = [0u32; 256];
+            let mut previous = 1u32;
+            let mut current = 1u32;
+            for symbol_count in counts.iter_mut().take(24) {
+                *symbol_count = current;
+                let next = previous + current;
+                previous = current;
+                current = next;
+            }
+            if let Some((encode_table, decode_table)) = build_tables_from_counts(&counts)
+                && decode_table.max_bits == wanted_max_bits
+            {
+                return (encode_table, decode_table);
+            }
+        }
+        panic!("could not find a random table with max_bits = {wanted_max_bits}");
     }
 
     fn random_text(
@@ -462,5 +444,53 @@ mod tests {
 
         assert!(checked_result.is_err());
         assert!(fast_result.is_err());
+    }
+
+    #[test]
+    fn fast_path_matches_checked_path_at_segment_length_boundaries_and_bit_width_extremes() {
+        let mut random = XorshiftRandom::new(0x51ED270B39537A2F);
+        let segment_lengths = [1usize, 7, 8, 9, 63, 64, 65, 5000];
+
+        for &wanted_max_bits in &[11u8, 1u8, 2u8] {
+            let (encode_table, decode_table) =
+                build_table_with_max_bits(&mut random, wanted_max_bits);
+            assert_eq!(decode_table.max_bits, wanted_max_bits);
+
+            for stream_count in [4usize, 8usize] {
+                for &segment_length in &segment_lengths {
+                    let length = segment_length * stream_count;
+                    let text = random_text(&mut random, &encode_table, length);
+
+                    let mut encoded = vec![0u8; length * 2 + 4096];
+                    let bytes_written =
+                        match encode_many_streams(&text, &encode_table, stream_count, &mut encoded)
+                        {
+                            Ok(bytes_written) => bytes_written,
+                            Err(_) => continue,
+                        };
+                    let encoded = &encoded[..bytes_written];
+
+                    let mut checked_output = vec![0u8; length];
+                    let checked_result = decode_many_streams(
+                        encoded,
+                        &decode_table,
+                        stream_count,
+                        &mut checked_output,
+                    );
+
+                    let fast_result = decode_fast(encoded, &decode_table, stream_count, length);
+
+                    match (checked_result, fast_result) {
+                        (Ok(()), Ok(fast_output)) => assert_eq!(checked_output, fast_output),
+                        (Err(checked_error), Err(fast_error)) => {
+                            assert_eq!(checked_error, fast_error)
+                        }
+                        (checked, fast) => panic!(
+                            "fast and checked paths disagreed: checked={checked:?} fast={fast:?} max_bits={wanted_max_bits} segment_length={segment_length} stream_count={stream_count}"
+                        ),
+                    }
+                }
+            }
+        }
     }
 }

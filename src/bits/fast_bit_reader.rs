@@ -18,7 +18,7 @@ pub struct FastBitReader {
 }
 
 impl FastBitReader {
-    pub unsafe fn new_unchecked(input: &[u8]) -> Result<Self, DecodeError> {
+    pub(crate) unsafe fn new_unchecked(input: &[u8]) -> Result<Self, DecodeError> {
         debug_assert!(input.len() >= 8);
         let last_byte = input[input.len() - 1];
         if last_byte == 0 {
@@ -39,7 +39,7 @@ impl FastBitReader {
         })
     }
 
-    pub unsafe fn new_padded_unchecked(
+    pub(crate) unsafe fn new_padded_unchecked(
         input: &[u8],
         buffer: &mut [u8; 16],
     ) -> Result<Self, DecodeError> {
@@ -89,7 +89,7 @@ impl FastBitReader {
     }
 
     #[inline(always)]
-    pub unsafe fn refill_unchecked(&mut self) -> ReloadStatus {
+    pub(crate) unsafe fn refill_unchecked(&mut self) -> ReloadStatus {
         if self.bits_consumed > 64 {
             return ReloadStatus::Overflow;
         }

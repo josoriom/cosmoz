@@ -198,8 +198,7 @@ fn fill_pattern_simd128(tile: &[u8; TILE_LENGTH], pattern_length: usize, destina
     }
 }
 
-#[allow(clippy::missing_safety_doc)]
-pub unsafe fn copy_bytes_overshoot_unchecked(
+pub(crate) unsafe fn copy_bytes_overshoot_unchecked(
     source: *const u8,
     destination: *mut u8,
     length: usize,

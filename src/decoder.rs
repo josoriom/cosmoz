@@ -37,14 +37,14 @@ impl DecodeWorkspace {
             if raw.is_null() {
                 alloc::alloc::handle_alloc_error(layout);
             }
-            write_initial_values(raw);
+            write_initial_values_unchecked(raw);
             alloc::boxed::Box::from_raw(raw)
         }
     }
 }
 
 #[cfg(feature = "alloc")]
-unsafe fn write_initial_values(target: *mut DecodeWorkspace) {
+unsafe fn write_initial_values_unchecked(target: *mut DecodeWorkspace) {
     unsafe {
         let block = core::ptr::addr_of_mut!((*target).block);
         core::ptr::write(

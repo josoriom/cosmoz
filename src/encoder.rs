@@ -102,14 +102,14 @@ impl EncodeWorkspace {
             if raw.is_null() {
                 alloc::alloc::handle_alloc_error(layout);
             }
-            write_initial_values(raw);
+            write_initial_values_unchecked(raw);
             alloc::boxed::Box::from_raw(raw)
         }
     }
 }
 
 #[cfg(feature = "alloc")]
-unsafe fn write_initial_values(target: *mut EncodeWorkspace) {
+unsafe fn write_initial_values_unchecked(target: *mut EncodeWorkspace) {
     unsafe {
         let match_finder = core::ptr::addr_of_mut!((*target).match_finder);
         core::ptr::write(
