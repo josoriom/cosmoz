@@ -315,16 +315,21 @@ fn hash_length_129_to_240(input: &[u8]) -> u64 {
     avalanche(accumulator.wrapping_add(accumulator_end))
 }
 
-fn accumulate_stripe(accumulators: &mut [u64; 8], stripe: &[u8], secret_offset: usize) {
-    for lane in 0..8 {
-        let data_value = read_u64_at(stripe, lane * 8);
-        let data_key = data_value ^ read_u64_at(&DEFAULT_SECRET, secret_offset + lane * 8);
-        let opposite_lane = lane ^ 1;
-        accumulators[opposite_lane] = accumulators[opposite_lane].wrapping_add(data_value);
-        let low_half = data_key & 0xFFFF_FFFF;
-        let high_half = data_key >> 32;
-        accumulators[lane] = accumulators[lane].wrapping_add(low_half.wrapping_mul(high_half));
-    }
+fn secret_window(secret_offset: usize) -> &'static [u8; 64] {
+    DEFAULT_SECRET[secret_offset..secret_offset + STRIPE_LENGTH]
+        .try_into()
+        .unwrap()
+}
+
+fn accumulate_one_stripe(accumulators: &mut [u64; 8], stripe: &[u8], secret_offset: usize) {
+    let mut padded_stripe = [0u8; STRIPE_LENGTH];
+    let copy_length = stripe.len().min(STRIPE_LENGTH);
+    padded_stripe[..copy_length].copy_from_slice(&stripe[..copy_length]);
+    crate::simd::xxhash3_stripes::accumulate_stripe(
+        accumulators,
+        &padded_stripe,
+        secret_window(secret_offset),
+    );
 }
 
 fn accumulate_stripes(
@@ -333,9 +338,18 @@ fn accumulate_stripes(
     secret_offset: usize,
     stripe_count: usize,
 ) {
-    for stripe_index in 0..stripe_count {
+    let full_stripe_count = stripe_count.min(input.len() / STRIPE_LENGTH);
+    if full_stripe_count > 0 {
+        crate::simd::xxhash3_stripes::accumulate_stripes(
+            accumulators,
+            &input[..full_stripe_count * STRIPE_LENGTH],
+            &DEFAULT_SECRET[secret_offset..],
+            full_stripe_count,
+        );
+    }
+    for stripe_index in full_stripe_count..stripe_count {
         let stripe = slice_from(input, stripe_index * STRIPE_LENGTH);
-        accumulate_stripe(
+        accumulate_one_stripe(
             accumulators,
             stripe,
             secret_offset + stripe_index * SECRET_CONSUME_RATE,
@@ -344,14 +358,7 @@ fn accumulate_stripes(
 }
 
 fn scramble_accumulators(accumulators: &mut [u64; 8], secret_offset: usize) {
-    for (lane, accumulator) in accumulators.iter_mut().enumerate() {
-        let key = read_u64_at(&DEFAULT_SECRET, secret_offset + lane * 8);
-        let mut value = *accumulator;
-        value ^= value >> 47;
-        value ^= key;
-        value = value.wrapping_mul(PRIME_32_1);
-        *accumulator = value;
-    }
+    crate::simd::xxhash3_stripes::scramble_accumulators(accumulators, secret_window(secret_offset));
 }
 
 fn consume_stripes(
@@ -424,10 +431,14 @@ fn hash_long_input(
             stripe_count,
         );
         let last_stripe_start = buffered_length - STRIPE_LENGTH;
-        accumulate_stripe(
+        let last_stripe: &[u8; STRIPE_LENGTH] = buffer
+            [last_stripe_start..last_stripe_start + STRIPE_LENGTH]
+            .try_into()
+            .unwrap();
+        crate::simd::xxhash3_stripes::accumulate_stripe(
             &mut accumulators,
-            slice_from(buffer, last_stripe_start),
-            SECRET_LIMIT - LAST_ACCUMULATION_SECRET_START,
+            last_stripe,
+            secret_window(SECRET_LIMIT - LAST_ACCUMULATION_SECRET_START),
         );
     } else {
         let catch_up_length = STRIPE_LENGTH - buffered_length;
@@ -436,10 +447,10 @@ fn hash_long_input(
             &buffer[INTERNAL_BUFFER_LENGTH - catch_up_length..INTERNAL_BUFFER_LENGTH],
         );
         last_stripe[catch_up_length..].copy_from_slice(&buffer[..buffered_length]);
-        accumulate_stripe(
+        crate::simd::xxhash3_stripes::accumulate_stripe(
             &mut accumulators,
             &last_stripe,
-            SECRET_LIMIT - LAST_ACCUMULATION_SECRET_START,
+            secret_window(SECRET_LIMIT - LAST_ACCUMULATION_SECRET_START),
         );
     }
     merge_accumulators(

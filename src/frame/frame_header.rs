@@ -113,6 +113,10 @@ pub fn read_frame_header(input: &[u8]) -> Result<FrameHeader, DecodeError> {
         return Err(DecodeError::WindowTooLarge);
     }
 
+    if format == FrameFormat::Osmo && content_size.is_none() {
+        return Err(DecodeError::BadFrameHeader);
+    }
+
     Ok(FrameHeader {
         format,
         window_size,

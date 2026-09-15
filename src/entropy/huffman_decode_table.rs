@@ -1,3 +1,7 @@
+use crate::bits::backward_bit_reader::BackwardBitReader;
+use crate::entropy::fse_decode_table::{
+    FseDecodeState, FseDecodeTable, read_fse_table_description,
+};
 use crate::error::DecodeError;
 
 pub const MAX_HUFFMAN_BITS: usize = 11;
@@ -36,7 +40,31 @@ impl Default for HuffmanDecodeTable {
     }
 }
 
-pub fn read_huffman_table_from_direct_weights(
+pub fn read_huffman_table(
+    input: &[u8],
+    table: &mut HuffmanDecodeTable,
+    weight_fse_table: &mut FseDecodeTable,
+) -> Result<usize, DecodeError> {
+    table.is_ready = false;
+    let header_byte = *input.first().ok_or(DecodeError::InputTooShort)?;
+    if header_byte >= 128 {
+        return read_huffman_table_from_direct_weights(input, table);
+    }
+    let compressed_size = header_byte as usize;
+    let weights_input = input.get(1..).ok_or(DecodeError::InputTooShort)?;
+    let mut weights = [0u8; MAX_WEIGHT_COUNT];
+    let weight_count = read_fse_weights(
+        weights_input,
+        compressed_size,
+        &mut weights,
+        weight_fse_table,
+    )?;
+    let symbol_count = add_last_weight(&mut weights, weight_count)?;
+    build_huffman_decode_table(&weights[..symbol_count], symbol_count, table)?;
+    Ok(1 + compressed_size)
+}
+
+fn read_huffman_table_from_direct_weights(
     input: &[u8],
     table: &mut HuffmanDecodeTable,
 ) -> Result<usize, DecodeError> {
@@ -52,6 +80,75 @@ pub fn read_huffman_table_from_direct_weights(
     let symbol_count = add_last_weight(&mut weights, weight_count)?;
     build_huffman_decode_table(&weights[..symbol_count], symbol_count, table)?;
     Ok(1 + weight_bytes_used)
+}
+
+fn read_fse_weights(
+    input: &[u8],
+    compressed_size: usize,
+    weights: &mut [u8],
+    weight_fse_table: &mut FseDecodeTable,
+) -> Result<usize, DecodeError> {
+    let section = input
+        .get(..compressed_size)
+        .ok_or(DecodeError::InputTooShort)?;
+    let description_bytes =
+        read_fse_table_description(section, MAX_WEIGHT_ACCURACY_LOG, 255, weight_fse_table)
+            .map_err(|_| DecodeError::BadHuffmanWeights)?;
+    let bitstream = section
+        .get(description_bytes..)
+        .ok_or(DecodeError::BadHuffmanWeights)?;
+    let mut reader =
+        BackwardBitReader::new(bitstream).map_err(|_| DecodeError::BadHuffmanWeights)?;
+    let mut state_1 = FseDecodeState::new(&mut reader, weight_fse_table);
+    let mut state_2 = FseDecodeState::new(&mut reader, weight_fse_table);
+    if reader.has_overflowed() {
+        return Err(DecodeError::BadHuffmanWeights);
+    }
+    let mut weight_count = 0usize;
+    loop {
+        push_weight(
+            weights,
+            &mut weight_count,
+            state_1.get_symbol(weight_fse_table),
+        )?;
+        state_1.update(&mut reader, weight_fse_table);
+        if reader.has_overflowed() {
+            push_weight(
+                weights,
+                &mut weight_count,
+                state_2.get_symbol(weight_fse_table),
+            )?;
+            break;
+        }
+        push_weight(
+            weights,
+            &mut weight_count,
+            state_2.get_symbol(weight_fse_table),
+        )?;
+        state_2.update(&mut reader, weight_fse_table);
+        if reader.has_overflowed() {
+            push_weight(
+                weights,
+                &mut weight_count,
+                state_1.get_symbol(weight_fse_table),
+            )?;
+            break;
+        }
+    }
+    Ok(weight_count)
+}
+
+fn push_weight(
+    weights: &mut [u8],
+    weight_count: &mut usize,
+    weight: u8,
+) -> Result<(), DecodeError> {
+    if *weight_count >= MAX_WEIGHT_COUNT - 1 {
+        return Err(DecodeError::BadHuffmanWeights);
+    }
+    weights[*weight_count] = weight;
+    *weight_count += 1;
+    Ok(())
 }
 
 fn read_direct_weights(
@@ -274,5 +371,42 @@ mod tests {
             read_huffman_table_from_direct_weights(&input, &mut table),
             Err(DecodeError::BadHuffmanWeights)
         );
+    }
+
+    #[test]
+    fn reads_direct_weights_through_the_public_entry_point() {
+        let header_byte = 127 + 3;
+        let input = [header_byte, 0x11, 0x25];
+        let mut table = HuffmanDecodeTable::new();
+        let mut weight_fse_table = FseDecodeTable::new();
+
+        let bytes_consumed = read_huffman_table(&input, &mut table, &mut weight_fse_table).unwrap();
+
+        assert_eq!(bytes_consumed, 3);
+        assert!(table.is_ready);
+        assert_eq!(table.max_bits, 3);
+    }
+
+    #[test]
+    fn reads_fse_compressed_huffman_weights_from_a_real_zstd_19_block() {
+        const HUFFMAN_HEADER_AND_FSE_WEIGHTS: [u8; 32] = [
+            0x1f, 0x10, 0xad, 0x07, 0x6f, 0x8a, 0x6e, 0xb3, 0x99, 0xb5, 0x95, 0x27, 0xaa, 0x6c,
+            0xe3, 0x3d, 0xc8, 0x91, 0x36, 0xe1, 0xf2, 0xd6, 0xfe, 0x7c, 0x6c, 0x40, 0x8a, 0x00,
+            0x00, 0x00, 0x00, 0x04,
+        ];
+        let mut table = HuffmanDecodeTable::new();
+        let mut weight_fse_table = FseDecodeTable::new();
+
+        let bytes_consumed = read_huffman_table(
+            &HUFFMAN_HEADER_AND_FSE_WEIGHTS,
+            &mut table,
+            &mut weight_fse_table,
+        )
+        .unwrap();
+
+        assert_eq!(bytes_consumed, HUFFMAN_HEADER_AND_FSE_WEIGHTS.len());
+        assert!(table.is_ready);
+        assert_eq!(table.max_bits, 7);
+        assert!((table.max_bits as usize) <= MAX_HUFFMAN_BITS);
     }
 }

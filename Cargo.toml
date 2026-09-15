@@ -14,6 +14,9 @@ parallel = ["std"]
 
 [dependencies]
 
+[dev-dependencies]
+osmo = { path = ".", features = ["std"] }
+
 [profile.release]
 opt-level = 3
 lto = true
