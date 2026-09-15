@@ -1,20 +1,126 @@
-use crate::bits::backward_bit_writer::BackwardBitWriter;
+use core::ptr;
+
 use crate::encode_error::EncodeError;
 use crate::entropy::huffman_encode_table::HuffmanEncodeTable;
 
 const MAX_STREAM_COUNT: usize = 8;
+
+pub fn encode_stream_capacity(input_length: usize) -> usize {
+    input_length * 11 / 8 + 16
+}
 
 pub fn encode_one_stream(
     input: &[u8],
     table: &HuffmanEncodeTable,
     output: &mut [u8],
 ) -> Result<usize, EncodeError> {
-    let mut writer = BackwardBitWriter::new(output);
-    for &symbol in input.iter().rev() {
-        let code = table.codes[symbol as usize];
-        writer.add_bits(code.code as u64, code.bit_count as usize)?;
+    let required = encode_stream_capacity(input.len());
+    if output.len() < required {
+        return Err(EncodeError::OutputTooSmall);
     }
-    writer.finish()
+    Ok(unsafe { encode_stream_unchecked(input, table, output.as_mut_ptr(), output.len()) })
+}
+
+unsafe fn encode_stream_unchecked(
+    input: &[u8],
+    table: &HuffmanEncodeTable,
+    output_pointer: *mut u8,
+    output_capacity: usize,
+) -> usize {
+    debug_assert!(output_capacity >= encode_stream_capacity(input.len()));
+    let length = input.len();
+    let codes = &table.codes;
+
+    let mut container: u64 = 0;
+    let mut bits_in_container: u32 = 0;
+    let mut write_position: usize = 0;
+    let mut index = length;
+
+    let remainder = length % 4;
+    for _ in 0..remainder {
+        index -= 1;
+        unsafe {
+            let symbol = *input.get_unchecked(index);
+            let code = codes.get_unchecked(symbol as usize);
+            container |= (code.code as u64) << bits_in_container;
+            bits_in_container += code.bit_count as u32;
+        }
+    }
+    if remainder > 0 {
+        unsafe {
+            flush_container_unchecked(
+                output_pointer,
+                output_capacity,
+                &mut write_position,
+                &mut container,
+                &mut bits_in_container,
+            );
+        }
+    }
+
+    while index > 0 {
+        index -= 4;
+        unsafe {
+            for offset in (0..4).rev() {
+                let symbol = *input.get_unchecked(index + offset);
+                let code = codes.get_unchecked(symbol as usize);
+                container |= (code.code as u64) << bits_in_container;
+                bits_in_container += code.bit_count as u32;
+            }
+            flush_container_unchecked(
+                output_pointer,
+                output_capacity,
+                &mut write_position,
+                &mut container,
+                &mut bits_in_container,
+            );
+        }
+    }
+
+    container |= 1u64 << bits_in_container;
+    bits_in_container += 1;
+    unsafe {
+        flush_container_unchecked(
+            output_pointer,
+            output_capacity,
+            &mut write_position,
+            &mut container,
+            &mut bits_in_container,
+        );
+        if bits_in_container > 0 {
+            debug_assert!(write_position < output_capacity);
+            *output_pointer.add(write_position) = container as u8;
+            write_position += 1;
+        }
+    }
+
+    write_position
+}
+
+unsafe fn flush_container_unchecked(
+    output_pointer: *mut u8,
+    output_capacity: usize,
+    write_position: &mut usize,
+    container: &mut u64,
+    bits_in_container: &mut u32,
+) {
+    debug_assert!(*bits_in_container < 64);
+    debug_assert!(*write_position + 8 <= output_capacity);
+    let byte_count = (*bits_in_container / 8) as usize;
+    unsafe {
+        ptr::write_unaligned(
+            output_pointer.add(*write_position) as *mut u64,
+            container.to_le(),
+        );
+    }
+    *write_position += byte_count;
+    let bit_count = byte_count as u32 * 8;
+    *bits_in_container -= bit_count;
+    *container = if bit_count >= 64 {
+        0
+    } else {
+        *container >> bit_count
+    };
 }
 
 pub fn encode_many_streams(
@@ -141,6 +247,89 @@ mod tests {
         decode_many_streams(&encoded[..bytes_written], &decode_table, 4, &mut decoded).unwrap();
 
         assert_eq!(decoded, text);
+    }
+
+    struct XorshiftRandom {
+        state: u64,
+    }
+
+    impl XorshiftRandom {
+        fn new(seed: u64) -> Self {
+            Self { state: seed | 1 }
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            self.state ^= self.state << 13;
+            self.state ^= self.state >> 7;
+            self.state ^= self.state << 17;
+            self.state
+        }
+
+        fn next_range(&mut self, bound: usize) -> usize {
+            (self.next_u64() % bound as u64) as usize
+        }
+    }
+
+    fn reference_encode_one_stream(
+        input: &[u8],
+        table: &HuffmanEncodeTable,
+        output: &mut [u8],
+    ) -> Result<usize, EncodeError> {
+        use crate::bits::backward_bit_writer::BackwardBitWriter;
+
+        let mut writer = BackwardBitWriter::new(output);
+        for &symbol in input.iter().rev() {
+            let code = table.codes[symbol as usize];
+            writer.add_bits(code.code as u64, code.bit_count as usize)?;
+        }
+        writer.finish()
+    }
+
+    #[test]
+    fn fast_stream_matches_reference_encoder_and_round_trips_for_random_tables_and_inputs() {
+        let mut random = XorshiftRandom::new(0xD1B54A32D192ED03);
+
+        for _ in 0..200 {
+            let mut counts = [0u32; 256];
+            let used_symbol_count = 2 + random.next_range(127);
+            let mut used_symbols = Vec::new();
+            while used_symbols.len() < used_symbol_count {
+                let symbol = random.next_range(128) as u8;
+                if !used_symbols.contains(&symbol) {
+                    used_symbols.push(symbol);
+                }
+            }
+            for &symbol in &used_symbols {
+                counts[symbol as usize] = 1 + random.next_range(500) as u32;
+            }
+
+            let mut table = HuffmanEncodeTable::new();
+            build_huffman_encode_table(&counts, &mut table).unwrap();
+
+            let input_length = random.next_range(5001);
+            let mut input = Vec::with_capacity(input_length);
+            for _ in 0..input_length {
+                let symbol_index = random.next_range(used_symbols.len());
+                input.push(used_symbols[symbol_index]);
+            }
+
+            let mut fast_output = vec![0u8; encode_stream_capacity(input.len())];
+            let fast_bytes = encode_one_stream(&input, &table, &mut fast_output).unwrap();
+
+            let mut reference_output = vec![0u8; encode_stream_capacity(input.len()) + 64];
+            let reference_bytes =
+                reference_encode_one_stream(&input, &table, &mut reference_output).unwrap();
+
+            assert_eq!(
+                &fast_output[..fast_bytes],
+                &reference_output[..reference_bytes]
+            );
+
+            let decode_table = build_decode_table(&table);
+            let mut decoded = vec![0u8; input.len()];
+            decode_one_stream(&fast_output[..fast_bytes], &decode_table, &mut decoded).unwrap();
+            assert_eq!(decoded, input);
+        }
     }
 
     #[test]

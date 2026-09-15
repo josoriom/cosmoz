@@ -59,6 +59,19 @@ unsafe fn write_initial_values(target: *mut DecodeWorkspace) {
             core::ptr::addr_of_mut!((*block).frame_format),
             FrameFormat::Zstd,
         );
+        let fast_sequence_tables = core::ptr::addr_of_mut!((*block).fast_sequence_tables);
+        core::ptr::write(
+            core::ptr::addr_of_mut!((*fast_sequence_tables).literal_length_dirty),
+            true,
+        );
+        core::ptr::write(
+            core::ptr::addr_of_mut!((*fast_sequence_tables).offset_dirty),
+            true,
+        );
+        core::ptr::write(
+            core::ptr::addr_of_mut!((*fast_sequence_tables).match_length_dirty),
+            true,
+        );
     }
 }
 

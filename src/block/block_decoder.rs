@@ -1,7 +1,9 @@
+use crate::block::block_decoder_fast::decode_sequences_fast_path_unchecked;
 use crate::block::literals::{LiteralSource, decode_literals};
 use crate::block::repeat_offsets::RepeatOffsets;
+use crate::block::sequence_tables_fast::FastSequenceTables;
 use crate::block::sequences::{
-    SequenceDecoder, SequenceTables, read_sequence_tables, read_sequences_header,
+    SequenceDecoder, SequenceTables, TableMode, read_sequence_tables, read_sequences_header,
 };
 use crate::entropy::fse_decode_table::FseDecodeTable;
 use crate::entropy::huffman_decode_table::HuffmanDecodeTable;
@@ -11,12 +13,14 @@ use crate::frame::frame_header::FrameFormat;
 use crate::simd::copy_bytes::{copy_bytes, copy_bytes_overshoot_unchecked, fill_pattern};
 
 const FAST_PATH_SLACK: usize = 32;
+const LITERALS_BUFFER_LENGTH: usize = MAX_BLOCK_SIZE + FAST_PATH_SLACK;
 
 pub struct BlockWorkspace {
-    pub literals: [u8; MAX_BLOCK_SIZE],
+    pub literals: [u8; LITERALS_BUFFER_LENGTH],
     pub huffman_table: HuffmanDecodeTable,
     pub weight_fse_table: FseDecodeTable,
     pub sequence_tables: SequenceTables,
+    pub fast_sequence_tables: FastSequenceTables,
     pub repeat_offsets: RepeatOffsets,
     pub frame_format: FrameFormat,
 }
@@ -24,10 +28,11 @@ pub struct BlockWorkspace {
 impl BlockWorkspace {
     pub const fn new() -> Self {
         Self {
-            literals: [0u8; MAX_BLOCK_SIZE],
+            literals: [0u8; LITERALS_BUFFER_LENGTH],
             huffman_table: HuffmanDecodeTable::new(),
             weight_fse_table: FseDecodeTable::new(),
             sequence_tables: SequenceTables::new(),
+            fast_sequence_tables: FastSequenceTables::new(),
             repeat_offsets: RepeatOffsets {
                 first: 1,
                 second: 4,
@@ -43,6 +48,9 @@ impl BlockWorkspace {
         self.sequence_tables.literal_length_ready = false;
         self.sequence_tables.offset_ready = false;
         self.sequence_tables.match_length_ready = false;
+        self.fast_sequence_tables.literal_length_dirty = true;
+        self.fast_sequence_tables.offset_dirty = true;
+        self.fast_sequence_tables.match_length_dirty = true;
         self.repeat_offsets = RepeatOffsets::new();
     }
 }
@@ -130,6 +138,19 @@ fn decode_compressed_block(
         .get(table_bytes_used..)
         .ok_or(DecodeError::InputTooShort)?;
 
+    if sequences_header.literal_length_mode != TableMode::Repeat {
+        workspace.fast_sequence_tables.literal_length_dirty = true;
+    }
+    if sequences_header.offset_mode != TableMode::Repeat {
+        workspace.fast_sequence_tables.offset_dirty = true;
+    }
+    if sequences_header.match_length_mode != TableMode::Repeat {
+        workspace.fast_sequence_tables.match_length_dirty = true;
+    }
+    workspace
+        .fast_sequence_tables
+        .build_all(&workspace.sequence_tables);
+
     let mut position = output_position;
     let mut literal_cursor = 0usize;
 
@@ -148,6 +169,31 @@ fn decode_compressed_block(
             return Err(DecodeError::BlockTooLarge);
         }
         return Ok(position);
+    }
+
+    let fast_path_available =
+        output.len() >= output_position + MAX_BLOCK_SIZE + FAST_PATH_SLACK && bitstream.len() >= 8;
+
+    if fast_path_available {
+        let literals_bytes = match literal_source {
+            LiteralSource::Raw(bytes) | LiteralSource::Decoded(bytes) => Some(bytes),
+            LiteralSource::Rle { .. } => None,
+        };
+        if let Some(literals_bytes) = literals_bytes {
+            return unsafe {
+                decode_sequences_fast_path_unchecked(
+                    bitstream,
+                    &workspace.fast_sequence_tables,
+                    sequences_header.sequence_count,
+                    literals_bytes,
+                    literal_count,
+                    output,
+                    output_position,
+                    workspace.frame_format,
+                    &mut workspace.repeat_offsets,
+                )
+            };
+        }
     }
 
     let mut decoder = SequenceDecoder::new(

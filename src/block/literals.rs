@@ -1,5 +1,5 @@
 use crate::entropy::fse_decode_table::FseDecodeTable;
-use crate::entropy::huffman_decode::{decode_many_streams, decode_one_stream};
+use crate::entropy::huffman_decode::{decode_many_streams_with_slack, decode_one_stream};
 use crate::entropy::huffman_decode_table::{HuffmanDecodeTable, read_huffman_table};
 use crate::error::DecodeError;
 use crate::frame::block_header::MAX_BLOCK_SIZE;
@@ -149,10 +149,13 @@ pub fn decode_literals<'input, 'workspace>(
             let stream_input = compressed_input
                 .get(huffman_table_bytes..)
                 .ok_or(DecodeError::InputTooShort)?;
-            let output_slice = workspace
-                .get_mut(..header.regenerated_size)
-                .ok_or(DecodeError::OutputTooSmall)?;
-            decode_streams(stream_count, stream_input, huffman_table, output_slice)?;
+            decode_streams(
+                stream_count,
+                stream_input,
+                huffman_table,
+                &mut *workspace,
+                header.regenerated_size,
+            )?;
             Ok((
                 LiteralSource::Decoded(&workspace[..header.regenerated_size]),
                 header.header_length + header.compressed_size,
@@ -165,10 +168,13 @@ pub fn decode_literals<'input, 'workspace>(
             let compressed_input = input
                 .get(header.header_length..header.header_length + header.compressed_size)
                 .ok_or(DecodeError::InputTooShort)?;
-            let output_slice = workspace
-                .get_mut(..header.regenerated_size)
-                .ok_or(DecodeError::OutputTooSmall)?;
-            decode_streams(stream_count, compressed_input, huffman_table, output_slice)?;
+            decode_streams(
+                stream_count,
+                compressed_input,
+                huffman_table,
+                &mut *workspace,
+                header.regenerated_size,
+            )?;
             Ok((
                 LiteralSource::Decoded(&workspace[..header.regenerated_size]),
                 header.header_length + header.compressed_size,
@@ -193,11 +199,15 @@ fn decode_streams(
     input: &[u8],
     huffman_table: &HuffmanDecodeTable,
     output: &mut [u8],
+    regenerated_size: usize,
 ) -> Result<(), DecodeError> {
     if stream_count == 1 {
-        decode_one_stream(input, huffman_table, output)
+        let output_slice = output
+            .get_mut(..regenerated_size)
+            .ok_or(DecodeError::OutputTooSmall)?;
+        decode_one_stream(input, huffman_table, output_slice)
     } else {
-        decode_many_streams(input, huffman_table, stream_count, output)
+        decode_many_streams_with_slack(input, huffman_table, stream_count, output, regenerated_size)
     }
 }
 

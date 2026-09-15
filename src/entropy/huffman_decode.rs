@@ -1,6 +1,11 @@
 use crate::bits::backward_bit_reader::BackwardBitReader;
+use crate::entropy::huffman_decode_fast::{
+    decode_eight_streams_unchecked, decode_four_streams_unchecked,
+};
 use crate::entropy::huffman_decode_table::{HuffmanDecodeEntry, HuffmanDecodeTable};
 use crate::error::DecodeError;
+
+const FAST_PATH_SLACK: usize = 32;
 
 pub fn decode_one_stream(
     input: &[u8],
@@ -24,11 +29,25 @@ pub fn decode_many_streams(
     stream_count: usize,
     output: &mut [u8],
 ) -> Result<(), DecodeError> {
+    let regenerated_size = output.len();
+    decode_many_streams_with_slack(input, table, stream_count, output, regenerated_size)
+}
+
+pub fn decode_many_streams_with_slack(
+    input: &[u8],
+    table: &HuffmanDecodeTable,
+    stream_count: usize,
+    output: &mut [u8],
+    regenerated_size: usize,
+) -> Result<(), DecodeError> {
     if !table.is_ready {
         return Err(DecodeError::BadHuffmanWeights);
     }
     if stream_count != 4 && stream_count != 8 {
         return Err(DecodeError::CorruptBitstream);
+    }
+    if regenerated_size > output.len() {
+        return Err(DecodeError::OutputTooSmall);
     }
 
     let jump_table_size = (stream_count - 1) * 2;
@@ -36,22 +55,21 @@ pub fn decode_many_streams(
         .get(jump_table_size..)
         .ok_or(DecodeError::CorruptBitstream)?;
 
-    let output_length = output.len();
-    let segment_size = output_length
+    let segment_size = regenerated_size
         .checked_add(stream_count - 1)
         .ok_or(DecodeError::CorruptBitstream)?
         / stream_count;
     let leading_segments_size = segment_size
         .checked_mul(stream_count - 1)
         .ok_or(DecodeError::CorruptBitstream)?;
-    if leading_segments_size > output_length {
+    if leading_segments_size > regenerated_size {
         return Err(DecodeError::CorruptBitstream);
     }
 
     let mut stream_slices: [&[u8]; 8] = [&[]; 8];
     let mut segment_lengths: [usize; 8] = [0; 8];
     let mut remaining_input = after_jump_table;
-    let mut remaining_output_length = output_length;
+    let mut remaining_output_length = regenerated_size;
     for stream_index in 0..stream_count {
         let is_last_stream = stream_index == stream_count - 1;
         let stream = if is_last_stream {
@@ -82,6 +100,62 @@ pub fn decode_many_streams(
         segment_lengths[stream_index] = segment_length;
     }
 
+    let has_fast_path_slack = output.len() >= regenerated_size + FAST_PATH_SLACK;
+    let streams_are_well_formed = stream_slices[..stream_count]
+        .iter()
+        .all(|stream| !stream.is_empty());
+
+    if has_fast_path_slack && streams_are_well_formed {
+        let output_pointer = output.as_mut_ptr();
+        if stream_count == 4 {
+            let streams = [
+                stream_slices[0],
+                stream_slices[1],
+                stream_slices[2],
+                stream_slices[3],
+            ];
+            let segments = [
+                segment_lengths[0],
+                segment_lengths[1],
+                segment_lengths[2],
+                segment_lengths[3],
+            ];
+            unsafe { decode_four_streams_unchecked(streams, table, output_pointer, segments) }
+        } else {
+            let streams = [
+                stream_slices[0],
+                stream_slices[1],
+                stream_slices[2],
+                stream_slices[3],
+                stream_slices[4],
+                stream_slices[5],
+                stream_slices[6],
+                stream_slices[7],
+            ];
+            let segments = [
+                segment_lengths[0],
+                segment_lengths[1],
+                segment_lengths[2],
+                segment_lengths[3],
+                segment_lengths[4],
+                segment_lengths[5],
+                segment_lengths[6],
+                segment_lengths[7],
+            ];
+            unsafe { decode_eight_streams_unchecked(streams, table, output_pointer, segments) }
+        }
+    } else {
+        decode_many_streams_checked(output, table, stream_count, stream_slices, segment_lengths)
+    }
+}
+
+fn decode_many_streams_checked(
+    output: &mut [u8],
+    table: &HuffmanDecodeTable,
+    stream_count: usize,
+    stream_slices: [&[u8]; 8],
+    segment_lengths: [usize; 8],
+) -> Result<(), DecodeError> {
     if stream_count == 4 {
         let mut readers = [
             BackwardBitReader::new(stream_slices[0])?,

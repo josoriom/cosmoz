@@ -3,6 +3,7 @@ pub mod fse_encode_table;
 pub mod fse_predefined;
 pub mod histogram;
 pub mod huffman_decode;
+pub(crate) mod huffman_decode_fast;
 pub mod huffman_decode_table;
 pub mod huffman_encode;
 pub mod huffman_encode_table;

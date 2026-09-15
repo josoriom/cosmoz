@@ -79,16 +79,24 @@ fn write_compressed_literals(
     output: &mut [u8],
     huffman_table: &mut HuffmanEncodeTable,
     weight_fse_table: &mut FseEncodeTable,
-    scratch: &mut [u8],
+    _scratch: &mut [u8],
 ) -> Result<usize, EncodeError> {
     let mut counts = [0u32; 256];
     count_symbols(input, &mut counts);
     build_huffman_encode_table(&counts, huffman_table)?;
 
-    let table_bytes = write_huffman_table(scratch, huffman_table, weight_fse_table)?;
+    let regenerated_size = input.len();
+    let stream_count = pick_stream_count(format, regenerated_size);
+    let size_format = pick_size_format_from_regenerated_size(stream_count, regenerated_size)
+        .ok_or(EncodeError::TableNotUsable)?;
+    let header_length = literals_header_length(LiteralsType::Compressed, size_format);
 
-    let stream_count = pick_stream_count(format, input.len());
-    let stream_output = scratch
+    let body = output
+        .get_mut(header_length..)
+        .ok_or(EncodeError::OutputTooSmall)?;
+    let table_bytes = write_huffman_table(body, huffman_table, weight_fse_table)?;
+
+    let stream_output = body
         .get_mut(table_bytes..)
         .ok_or(EncodeError::OutputTooSmall)?;
     let stream_bytes = if stream_count == 1 {
@@ -97,13 +105,12 @@ fn write_compressed_literals(
         encode_many_streams(input, huffman_table, stream_count, stream_output)?
     };
 
-    let regenerated_size = input.len();
     let compressed_size = table_bytes + stream_bytes;
+    let size_bits = literals_size_bits(size_format);
+    if compressed_size >= (1usize << size_bits) {
+        return Err(EncodeError::TableNotUsable);
+    }
 
-    let size_format = pick_size_format(stream_count, regenerated_size, compressed_size)
-        .ok_or(EncodeError::TableNotUsable)?;
-
-    let header_length = literals_header_length(LiteralsType::Compressed, size_format);
     let total_size = header_length + compressed_size;
 
     let raw_size_format = pick_raw_size_format(regenerated_size)?;
@@ -114,21 +121,14 @@ fn write_compressed_literals(
         return Err(EncodeError::TableNotUsable);
     }
 
-    let written_header_length = write_literals_header(
+    write_literals_header(
         output,
         LiteralsType::Compressed,
         size_format,
         regenerated_size,
         compressed_size,
     )?;
-    let destination_end = written_header_length
-        .checked_add(compressed_size)
-        .ok_or(EncodeError::OutputTooSmall)?;
-    let destination = output
-        .get_mut(written_header_length..destination_end)
-        .ok_or(EncodeError::OutputTooSmall)?;
-    destination.copy_from_slice(&scratch[..compressed_size]);
-    Ok(destination_end)
+    Ok(total_size)
 }
 
 fn write_literals_header(
@@ -221,13 +221,12 @@ fn pick_stream_count(format: FrameFormat, length: usize) -> usize {
     }
 }
 
-fn pick_size_format(
+fn pick_size_format_from_regenerated_size(
     stream_count: usize,
     regenerated_size: usize,
-    compressed_size: usize,
 ) -> Option<u8> {
     if stream_count == 1 {
-        if regenerated_size <= ONE_STREAM_MAX_SIZE && compressed_size <= ONE_STREAM_MAX_SIZE {
+        if regenerated_size <= ONE_STREAM_MAX_SIZE {
             Some(0)
         } else {
             None
@@ -235,7 +234,7 @@ fn pick_size_format(
     } else {
         const LIMITS: [(u8, usize); 3] = [(1, 1023), (2, 16383), (3, 262143)];
         for &(candidate_format, limit) in LIMITS.iter() {
-            if regenerated_size <= limit && compressed_size <= limit {
+            if regenerated_size <= limit {
                 return Some(candidate_format);
             }
         }

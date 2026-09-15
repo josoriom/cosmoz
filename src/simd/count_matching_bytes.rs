@@ -21,6 +21,21 @@ pub fn count_matching_bytes(first: &[u8], second: &[u8]) -> usize {
     }
 }
 
+#[allow(clippy::missing_safety_doc)]
+pub unsafe fn count_matching_bytes_unchecked(
+    first: *const u8,
+    second: *const u8,
+    limit: usize,
+) -> usize {
+    debug_assert!(!first.is_null());
+    debug_assert!(!second.is_null());
+    unsafe {
+        let first_slice = core::slice::from_raw_parts(first, limit);
+        let second_slice = core::slice::from_raw_parts(second, limit);
+        count_matching_bytes(first_slice, second_slice)
+    }
+}
+
 fn count_matching_bytes_scalar(first: &[u8], second: &[u8]) -> usize {
     let limit = first.len().min(second.len());
     let mut matched = 0usize;
@@ -311,5 +326,20 @@ mod tests {
     #[test]
     fn self_tests_pass() {
         assert_eq!(run_self_tests(), None);
+    }
+
+    #[test]
+    fn unchecked_entry_point_agrees_with_the_safe_function() {
+        for &length in &lengths() {
+            let first = generate_pseudo_random_bytes(length + 32, 0x5EED_0001 ^ length as u32);
+            let mut second = first.clone();
+            if length > 0 {
+                second[length / 2] ^= 0xFF;
+            }
+            let expected = count_matching_bytes(&first[..length], &second[..length]);
+            let actual =
+                unsafe { count_matching_bytes_unchecked(first.as_ptr(), second.as_ptr(), length) };
+            assert_eq!(actual, expected);
+        }
     }
 }

@@ -8,6 +8,8 @@ pub const MAX_HUFFMAN_BITS: usize = 11;
 pub const MAX_HUFFMAN_TABLE_SIZE: usize = 1 << MAX_HUFFMAN_BITS;
 pub const MAX_WEIGHT_COUNT: usize = 256;
 pub const MAX_WEIGHT_ACCURACY_LOG: usize = 6;
+pub const HUFFMAN_DOUBLE_TABLE_BITS: usize = 12;
+pub const HUFFMAN_DOUBLE_TABLE_SIZE: usize = 1 << HUFFMAN_DOUBLE_TABLE_BITS;
 
 #[derive(Clone, Copy, Default)]
 pub struct HuffmanDecodeEntry {
@@ -15,8 +17,16 @@ pub struct HuffmanDecodeEntry {
     pub bit_count: u8,
 }
 
+#[derive(Clone, Copy, Default)]
+pub struct HuffmanDoubleEntry {
+    pub symbols: [u8; 2],
+    pub symbol_count: u8,
+    pub bit_count: u8,
+}
+
 pub struct HuffmanDecodeTable {
     pub entries: [HuffmanDecodeEntry; MAX_HUFFMAN_TABLE_SIZE],
+    pub double_entries: [HuffmanDoubleEntry; HUFFMAN_DOUBLE_TABLE_SIZE],
     pub max_bits: u8,
     pub is_ready: bool,
 }
@@ -28,6 +38,11 @@ impl HuffmanDecodeTable {
                 symbol: 0,
                 bit_count: 0,
             }; MAX_HUFFMAN_TABLE_SIZE],
+            double_entries: [HuffmanDoubleEntry {
+                symbols: [0, 0],
+                symbol_count: 0,
+                bit_count: 0,
+            }; HUFFMAN_DOUBLE_TABLE_SIZE],
             max_bits: 0,
             is_ready: false,
         }
@@ -273,7 +288,37 @@ fn build_huffman_decode_table(
 
     table.max_bits = max_bits as u8;
     table.is_ready = true;
+    build_huffman_double_decode_table(table);
     Ok(())
+}
+
+fn build_huffman_double_decode_table(table: &mut HuffmanDecodeTable) {
+    let max_bits = table.max_bits as usize;
+    let shift = HUFFMAN_DOUBLE_TABLE_BITS - max_bits;
+    let window_mask = HUFFMAN_DOUBLE_TABLE_SIZE - 1;
+    for window in 0..HUFFMAN_DOUBLE_TABLE_SIZE {
+        let first_index = window >> shift;
+        let first_entry = table.entries[first_index];
+        let first_bit_count = first_entry.bit_count as usize;
+        let remaining_bits = HUFFMAN_DOUBLE_TABLE_BITS - first_bit_count;
+        let entry = if remaining_bits >= max_bits {
+            let shifted = (window << first_bit_count) & window_mask;
+            let second_index = shifted >> shift;
+            let second_entry = table.entries[second_index];
+            HuffmanDoubleEntry {
+                symbols: [first_entry.symbol, second_entry.symbol],
+                symbol_count: 2,
+                bit_count: first_entry.bit_count + second_entry.bit_count,
+            }
+        } else {
+            HuffmanDoubleEntry {
+                symbols: [first_entry.symbol, 0],
+                symbol_count: 1,
+                bit_count: first_entry.bit_count,
+            }
+        };
+        table.double_entries[window] = entry;
+    }
 }
 
 fn find_highest_set_bit_position(value: usize) -> usize {
@@ -309,6 +354,55 @@ mod tests {
         for cell in 8..16 {
             assert_eq!(table.entries[cell].symbol, 0);
             assert_eq!(table.entries[cell].bit_count, 1);
+        }
+    }
+
+    #[test]
+    fn double_table_agrees_with_single_symbol_lookups() {
+        let weights = [4u8, 3, 2, 0, 1, 1];
+        let mut table = HuffmanDecodeTable::new();
+        build_huffman_decode_table(&weights, weights.len(), &mut table).unwrap();
+
+        let max_bits = table.max_bits as usize;
+        let shift = HUFFMAN_DOUBLE_TABLE_BITS - max_bits;
+        for window in 0..HUFFMAN_DOUBLE_TABLE_SIZE {
+            let first_index = window >> shift;
+            let first_entry = table.entries[first_index];
+            let double_entry = table.double_entries[window];
+            assert_eq!(double_entry.symbols[0], first_entry.symbol);
+            if double_entry.symbol_count == 2 {
+                let window_mask = HUFFMAN_DOUBLE_TABLE_SIZE - 1;
+                let shifted = (window << first_entry.bit_count) & window_mask;
+                let second_index = shifted >> shift;
+                let second_entry = table.entries[second_index];
+                assert_eq!(double_entry.symbols[1], second_entry.symbol);
+                assert_eq!(
+                    double_entry.bit_count,
+                    first_entry.bit_count + second_entry.bit_count
+                );
+                assert!((double_entry.bit_count as usize) <= HUFFMAN_DOUBLE_TABLE_BITS);
+            } else {
+                assert_eq!(double_entry.bit_count, first_entry.bit_count);
+            }
+        }
+    }
+
+    #[test]
+    fn double_table_build_finishes_under_twenty_microseconds() {
+        let weights = [4u8, 3, 2, 0, 1, 1];
+        let mut table = HuffmanDecodeTable::new();
+        build_huffman_decode_table(&weights, weights.len(), &mut table).unwrap();
+
+        let iterations = 200;
+        let started_at = std::time::Instant::now();
+        for _ in 0..iterations {
+            build_huffman_double_decode_table(&mut table);
+        }
+        let elapsed = started_at.elapsed();
+        let per_build_nanoseconds = elapsed.as_nanos() / iterations as u128;
+        std::println!("huffman double table build: {per_build_nanoseconds} ns");
+        if !cfg!(debug_assertions) {
+            assert!(per_build_nanoseconds < 20_000);
         }
     }
 
