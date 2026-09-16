@@ -260,6 +260,19 @@ fn write_fse_weights(
     }
     let symbol_count = max_weight_value + 1;
 
+    // With a single distinct weight value that value owns every state of the FSE
+    // table, so each weight costs zero bits and the stream carries no record of
+    // how many weights there are. A decoder stops when its bit reader overruns,
+    // which then lands nowhere near the true count, so the table has to go out in
+    // the direct form however much larger that is.
+    let distinct_weight_values = counts[..symbol_count]
+        .iter()
+        .filter(|&&count| count > 0)
+        .count();
+    if distinct_weight_values < 2 {
+        return Err(EncodeError::TableNotUsable);
+    }
+
     let accuracy_log = pick_accuracy_log(weight_count, symbol_count, MAX_WEIGHT_ACCURACY_LOG);
 
     let mut normalized_counts = [0i16; MAX_WEIGHT_VALUE + 1];
@@ -338,6 +351,45 @@ mod tests {
         fse_decode_table::FseDecodeTable,
         huffman_decode_table::{HuffmanDecodeTable, read_huffman_table},
     };
+
+    /// A table whose weights are all equal cannot be coded through FSE: that one
+    /// weight value owns every state, so each weight costs zero bits and the
+    /// stream carries no record of how many weights there are. The encoder used
+    /// to pick that form anyway, because it measured shorter, and produced a
+    /// description neither this decoder nor the reference implementation could
+    /// read.
+    #[test]
+    fn a_table_with_one_distinct_weight_goes_out_in_the_direct_form() {
+        let mut counts = [0u32; 256];
+        for count in counts[..16].iter_mut() {
+            *count = 100;
+        }
+
+        let mut table = HuffmanEncodeTable::new();
+        build_huffman_encode_table(&counts, &mut table).unwrap();
+
+        let weights = &table.weights[..table.symbol_count];
+        assert!(
+            weights.iter().all(|&weight| weight == weights[0]),
+            "this shape is meant to produce one distinct weight"
+        );
+
+        let mut weight_fse_table = FseEncodeTable::new();
+        let mut written = [0u8; 512];
+        let length = write_huffman_table(&mut written, &table, &mut weight_fse_table).unwrap();
+
+        assert!(
+            written[0] >= 128,
+            "expected the direct form, got a compressed size of {}",
+            written[0]
+        );
+
+        let mut decode_table = HuffmanDecodeTable::new();
+        let mut scratch = FseDecodeTable::new();
+        let read = read_huffman_table(&written[..length], &mut decode_table, &mut scratch);
+        assert_eq!(read, Ok(length), "the description must be readable");
+        assert_eq!(decode_table.max_bits, table.max_bits);
+    }
 
     const SAMPLE_TEXT: &[u8] = b"the quick brown fox jumps over the lazy dog while the sun sets \
 slowly behind the distant hills and the wind carries the scent of rain across the quiet valley";
