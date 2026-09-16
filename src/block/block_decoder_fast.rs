@@ -122,6 +122,9 @@ unsafe fn decode_one_sequence_unchecked(
     })
 }
 
+/// Copies `length` literals in whole 16-byte vectors, so it reads up to 15 bytes past
+/// `literals + literal_cursor + length`. Callers must keep that overshoot inside a live
+/// allocation; see `raw_literals_have_read_slack` in the parent module.
 #[inline(always)]
 unsafe fn copy_literals_unchecked(
     literals: *const u8,
@@ -419,6 +422,11 @@ fn split_osmo_streams(
     ))
 }
 
+/// # Safety
+///
+/// `output` must have at least `MAX_BLOCK_SIZE + 32` bytes free from `output_position`,
+/// and `literals` must be followed by at least 16 readable bytes within its own
+/// allocation, because literal copies overshoot to a 16-byte boundary.
 #[allow(clippy::too_many_arguments)]
 pub(crate) unsafe fn decode_sequences_fast_path_unchecked(
     bitstream: &[u8],

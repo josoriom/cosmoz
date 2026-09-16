@@ -20,6 +20,19 @@ use crate::{
 const FAST_PATH_SLACK: usize = 32;
 const LITERALS_BUFFER_LENGTH: usize = MAX_BLOCK_SIZE + FAST_PATH_SLACK;
 
+/// The fast path copies literals in whole 16-byte vectors, so it may read up to 15 bytes
+/// past the last literal it needs.
+const LITERALS_READ_SLACK: usize = 16;
+
+/// Raw literals are borrowed from the block payload, which is itself borrowed from the
+/// caller's input buffer, so nothing guarantees the fast path's overshoot stays inside a
+/// live allocation. Only hand them to it when the payload itself has the slack to spare.
+/// Decoded literals live in `BlockWorkspace::literals`, which is oversized by
+/// `FAST_PATH_SLACK`, so they never need this check.
+fn raw_literals_have_read_slack(payload_length: usize, literals_end: usize) -> bool {
+    payload_length - literals_end >= LITERALS_READ_SLACK
+}
+
 pub struct BlockWorkspace {
     pub literals: [u8; LITERALS_BUFFER_LENGTH],
     pub huffman_table: HuffmanDecodeTable,
@@ -181,7 +194,14 @@ fn decode_compressed_block(
 
     if fast_path_available {
         let literals_bytes = match literal_source {
-            LiteralSource::Raw(bytes) | LiteralSource::Decoded(bytes) => Some(bytes),
+            LiteralSource::Raw(bytes) => {
+                if raw_literals_have_read_slack(input.len(), literals_bytes_used) {
+                    Some(bytes)
+                } else {
+                    None
+                }
+            }
+            LiteralSource::Decoded(bytes) => Some(bytes),
             LiteralSource::Rle { .. } => None,
         };
         if let Some(literals_bytes) = literals_bytes {
@@ -643,6 +663,56 @@ The quick brown fox jumps over the lazy dog. "
         let input = std::vec![0x37u8; 8192];
         let decoded = round_trip_through_decode_block(&input);
         assert_eq!(decoded, input);
+    }
+
+    #[test]
+    fn raw_literal_fast_path_requires_sixteen_bytes_of_read_slack() {
+        assert!(!raw_literals_have_read_slack(100, 100));
+        assert!(!raw_literals_have_read_slack(100, 85));
+        assert!(raw_literals_have_read_slack(100, 84));
+        assert!(raw_literals_have_read_slack(100, 0));
+    }
+
+    /// Raw literals borrow from the caller's input buffer, and the fast path copies them
+    /// with a 16-byte overshoot. These shapes put only ten bytes of sequences data behind
+    /// the literals, so the fast path must decline them rather than read past the end.
+    /// Run under AddressSanitizer to see a regression here as a heap-buffer-overflow.
+    #[test]
+    fn round_trips_raw_literal_blocks_that_end_close_to_the_payload_end() {
+        use crate::{
+            decoder::{DecodeWorkspace, decompress},
+            encoder::{CompressOptions, EncodeWorkspace, compress, get_max_compressed_size},
+        };
+
+        let options = CompressOptions::zstd();
+        let mut encode_workspace = EncodeWorkspace::new_boxed();
+        let mut decode_workspace = DecodeWorkspace::new_boxed();
+        let mut state = 7u32;
+
+        for trial in 0..4000usize {
+            let length = 100 + trial % 3000;
+            let mut input = xorshift_bytes(length, state.max(1));
+            state = state
+                .wrapping_mul(2654435761)
+                .wrapping_add(trial as u32)
+                .max(1);
+            for _ in 0..(1 + trial % 3) {
+                let take = 8 + trial % 40;
+                let repeat = input[..take].to_vec();
+                input.extend_from_slice(&repeat);
+            }
+
+            let mut compressed = std::vec![0u8; get_max_compressed_size(input.len(), &options)];
+            let compressed_length =
+                compress(&input, &mut compressed, &options, &mut encode_workspace).unwrap();
+            let frame = compressed[..compressed_length].to_vec();
+
+            // Padded so the decoder takes its unchecked fast path.
+            let mut decoded = std::vec![0u8; MAX_BLOCK_SIZE + FAST_PATH_SLACK + input.len()];
+            let decoded_length = decompress(&frame, &mut decoded, &mut decode_workspace).unwrap();
+            assert_eq!(decoded_length, input.len(), "trial {trial}");
+            assert_eq!(&decoded[..decoded_length], &input[..], "trial {trial}");
+        }
     }
 
     #[test]
