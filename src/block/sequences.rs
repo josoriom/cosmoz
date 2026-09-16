@@ -168,7 +168,7 @@ pub fn read_sequence_tables(
     let mut position = 0usize;
 
     position += read_table_for_mode(
-        &input[position..],
+        input.get(position..).ok_or(DecodeError::InputTooShort)?,
         header.literal_length_mode,
         9,
         35,
@@ -178,7 +178,7 @@ pub fn read_sequence_tables(
     )?;
 
     position += read_table_for_mode(
-        &input[position..],
+        input.get(position..).ok_or(DecodeError::InputTooShort)?,
         header.offset_mode,
         8,
         31,
@@ -188,7 +188,7 @@ pub fn read_sequence_tables(
     )?;
 
     position += read_table_for_mode(
-        &input[position..],
+        input.get(position..).ok_or(DecodeError::InputTooShort)?,
         header.match_length_mode,
         9,
         52,

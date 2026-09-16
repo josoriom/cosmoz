@@ -540,6 +540,27 @@ mod tests {
     }
 
     #[test]
+    fn rejects_a_truncated_fse_table_description_without_panicking() {
+        // A compressed block whose literal length table is declared FSE but carries a single
+        // byte of description. Reading past that byte reported fifteen bytes consumed, and
+        // the sequences reader sliced the table input with it.
+        let frame = [
+            0x28, 0xB5, 0x2F, 0xFD, 0x00, 0x50, // frame header, 1 MiB window, no content size
+            0x25, 0x00, 0x00, // last block, compressed, four bytes of payload
+            0x00, // raw literals, length zero
+            0x01, // one sequence
+            0x80, // literal lengths in FSE mode
+            0x00, // the truncated table description
+        ];
+        let mut workspace = DecodeWorkspace::new_boxed();
+        let mut output = [0u8; 64];
+        assert_eq!(
+            decompress(&frame, &mut output, &mut workspace),
+            Err(DecodeError::InputTooShort)
+        );
+    }
+
+    #[test]
     fn decompresses_a_frame_without_checksum() {
         let mut workspace = DecodeWorkspace::new_boxed();
         let mut output = [0u8; 1024];

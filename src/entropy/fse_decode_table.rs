@@ -139,7 +139,17 @@ pub fn read_fse_table_description(
     }
 
     build_fse_decode_table(&normalized_counts[..symbol_count], accuracy_log, table)?;
-    Ok(reader.bytes_used())
+
+    // Reading past the end of `input` yields zero bits instead of failing, and a run of
+    // zeroes walks `remaining` down to one just as a real description would. A truncated
+    // description can therefore build a table and report consuming more bytes than were
+    // ever supplied. Callers slice with this count, so reject it here rather than hand
+    // back an offset that points outside the input.
+    let bytes_used = reader.bytes_used();
+    if bytes_used > input.len() {
+        return Err(DecodeError::InputTooShort);
+    }
+    Ok(bytes_used)
 }
 
 fn push_normalized_count(
@@ -250,6 +260,18 @@ fn count_bits_needed(value: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_a_description_that_reads_past_the_end_of_its_input() {
+        // A single zero byte sets an accuracy log of five and then runs out. The zeroes the
+        // reader invents past the end walk `remaining` down to one, so the description looks
+        // complete while reporting far more bytes consumed than were supplied.
+        let mut table = FseDecodeTable::new();
+        assert_eq!(
+            read_fse_table_description(&[0x00], 9, 35, &mut table),
+            Err(DecodeError::InputTooShort)
+        );
+    }
 
     #[test]
     fn build_fse_decode_table_matches_a_hand_computed_table() {
