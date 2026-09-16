@@ -1,7 +1,7 @@
 use crate::{
     block::{
         block_decoder_fast::decode_sequences_fast_path_unchecked,
-        literals::{LiteralSource, decode_literals},
+        literals::{LiteralSource, decode_literal_sections_pair_unchecked, decode_literals},
         repeat_offsets::RepeatOffsets,
         sequence_tables_fast::FastSequenceTables,
         sequences::{
@@ -35,7 +35,8 @@ fn raw_literals_have_read_slack(payload_length: usize, literals_end: usize) -> b
 
 pub struct BlockWorkspace {
     pub literals: [u8; LITERALS_BUFFER_LENGTH],
-    pub huffman_table: HuffmanDecodeTable,
+    pub huffman_tables: [HuffmanDecodeTable; 2],
+    pub current_huffman_table: usize,
     pub weight_fse_table: FseDecodeTable,
     pub sequence_tables: SequenceTables,
     pub fast_sequence_tables: FastSequenceTables,
@@ -47,7 +48,8 @@ impl BlockWorkspace {
     pub const fn new() -> Self {
         Self {
             literals: [0u8; LITERALS_BUFFER_LENGTH],
-            huffman_table: HuffmanDecodeTable::new(),
+            huffman_tables: [HuffmanDecodeTable::new(), HuffmanDecodeTable::new()],
+            current_huffman_table: 0,
             weight_fse_table: FseDecodeTable::new(),
             sequence_tables: SequenceTables::new(),
             fast_sequence_tables: FastSequenceTables::new(),
@@ -62,7 +64,9 @@ impl BlockWorkspace {
 
     pub fn reset_history(&mut self, format: FrameFormat) {
         self.frame_format = format;
-        self.huffman_table.is_ready = false;
+        self.huffman_tables[0].is_ready = false;
+        self.huffman_tables[1].is_ready = false;
+        self.current_huffman_table = 0;
         self.sequence_tables.literal_length_ready = false;
         self.sequence_tables.offset_ready = false;
         self.sequence_tables.match_length_ready = false;
@@ -134,60 +138,134 @@ fn decode_compressed_block(
     let (literal_source, literals_bytes_used) = decode_literals(
         input,
         workspace.frame_format,
-        &mut workspace.huffman_table,
+        &mut workspace.huffman_tables[workspace.current_huffman_table & 1],
         &mut workspace.weight_fse_table,
         &mut workspace.literals,
     )?;
-    let literal_count = literal_source.len();
+    let mut sequence_state = SequenceState {
+        sequence_tables: &mut workspace.sequence_tables,
+        fast_sequence_tables: &mut workspace.fast_sequence_tables,
+        repeat_offsets: &mut workspace.repeat_offsets,
+        frame_format: workspace.frame_format,
+    };
+    decode_sequences_section(
+        input,
+        literals_bytes_used,
+        literal_source,
+        output,
+        output_position,
+        &mut sequence_state,
+    )
+}
 
+const PAIRED_LITERALS_DISTANCE: usize = 2 * MAX_BLOCK_SIZE + 2 * FAST_PATH_SLACK;
+const PAIRED_OUTPUT_ROOM: usize = PAIRED_LITERALS_DISTANCE + MAX_BLOCK_SIZE + LITERALS_READ_SLACK;
+
+pub fn decode_compressed_block_pair(
+    first_input: &[u8],
+    second_input: &[u8],
+    output: &mut [u8],
+    output_position: usize,
+    workspace: &mut BlockWorkspace,
+) -> Result<Option<usize>, DecodeError> {
+    if workspace.frame_format != FrameFormat::Zstd
+        || output.len() < output_position + PAIRED_OUTPUT_ROOM
+    {
+        return Ok(None);
+    }
+    let second_literals_position = output_position + PAIRED_LITERALS_DISTANCE;
+    let second_literals = unsafe { output.as_mut_ptr().add(second_literals_position) };
+    let Some(pair) = (unsafe {
+        decode_literal_sections_pair_unchecked(
+            first_input,
+            second_input,
+            &mut workspace.huffman_tables,
+            &mut workspace.current_huffman_table,
+            &mut workspace.weight_fse_table,
+            &mut workspace.literals,
+            second_literals,
+        )?
+    }) else {
+        return Ok(None);
+    };
+
+    let mut sequence_state = SequenceState {
+        sequence_tables: &mut workspace.sequence_tables,
+        fast_sequence_tables: &mut workspace.fast_sequence_tables,
+        repeat_offsets: &mut workspace.repeat_offsets,
+        frame_format: workspace.frame_format,
+    };
+    let middle_position = decode_sequences_section(
+        first_input,
+        pair.first_bytes_used,
+        LiteralSource::Decoded(&workspace.literals[..pair.first_count]),
+        output,
+        output_position,
+        &mut sequence_state,
+    )?;
+
+    let end_position = decode_sequences_section(
+        second_input,
+        pair.second_bytes_used,
+        LiteralSource::InOutput {
+            start: second_literals_position,
+            count: pair.second_count,
+        },
+        output,
+        middle_position,
+        &mut sequence_state,
+    )?;
+    Ok(Some(end_position))
+}
+
+struct SequenceState<'workspace> {
+    sequence_tables: &'workspace mut SequenceTables,
+    fast_sequence_tables: &'workspace mut FastSequenceTables,
+    repeat_offsets: &'workspace mut RepeatOffsets,
+    frame_format: FrameFormat,
+}
+
+fn decode_sequences_section(
+    input: &[u8],
+    literals_bytes_used: usize,
+    literal_source: LiteralSource,
+    output: &mut [u8],
+    output_position: usize,
+    state: &mut SequenceState,
+) -> Result<usize, DecodeError> {
+    let literal_count = literal_source.len();
     let sequences_input = input
         .get(literals_bytes_used..)
         .ok_or(DecodeError::InputTooShort)?;
     let sequences_header = read_sequences_header(sequences_input)?;
+    if sequences_header.sequence_count == 0 {
+        if sequences_input.len() != sequences_header.header_length {
+            return Err(DecodeError::CorruptBitstream);
+        }
+        return copy_all_literals(&literal_source, output, output_position);
+    }
     let table_input = sequences_input
         .get(sequences_header.header_length..)
         .ok_or(DecodeError::InputTooShort)?;
-    let table_bytes_used = read_sequence_tables(
-        table_input,
-        &sequences_header,
-        &mut workspace.sequence_tables,
-    )?;
+    let table_bytes_used =
+        read_sequence_tables(table_input, &sequences_header, state.sequence_tables)?;
     let bitstream = table_input
         .get(table_bytes_used..)
         .ok_or(DecodeError::InputTooShort)?;
 
     if sequences_header.literal_length_mode != TableMode::Repeat {
-        workspace.fast_sequence_tables.literal_length_dirty = true;
+        state.fast_sequence_tables.literal_length_dirty = true;
     }
     if sequences_header.offset_mode != TableMode::Repeat {
-        workspace.fast_sequence_tables.offset_dirty = true;
+        state.fast_sequence_tables.offset_dirty = true;
     }
     if sequences_header.match_length_mode != TableMode::Repeat {
-        workspace.fast_sequence_tables.match_length_dirty = true;
+        state.fast_sequence_tables.match_length_dirty = true;
     }
-    workspace
-        .fast_sequence_tables
-        .build_all(&workspace.sequence_tables);
+    state.fast_sequence_tables.build_all(state.sequence_tables);
 
     let mut position = output_position;
     let mut literal_cursor = 0usize;
-
-    if sequences_header.sequence_count == 0 {
-        if !bitstream.is_empty() {
-            return Err(DecodeError::CorruptBitstream);
-        }
-        position = take_literals(
-            &literal_source,
-            &mut literal_cursor,
-            literal_count,
-            output,
-            position,
-        )?;
-        if position - output_position > MAX_BLOCK_SIZE {
-            return Err(DecodeError::BlockTooLarge);
-        }
-        return Ok(position);
-    }
 
     let fast_path_available =
         output.len() >= output_position + MAX_BLOCK_SIZE + FAST_PATH_SLACK && bitstream.len() >= 8;
@@ -196,26 +274,29 @@ fn decode_compressed_block(
         let literals_bytes = match literal_source {
             LiteralSource::Raw(bytes) => {
                 if raw_literals_have_read_slack(input.len(), literals_bytes_used) {
-                    Some(bytes)
+                    Some(bytes.as_ptr())
                 } else {
                     None
                 }
             }
-            LiteralSource::Decoded(bytes) => Some(bytes),
+            LiteralSource::Decoded(bytes) => Some(bytes.as_ptr()),
+            LiteralSource::InOutput { start, .. } => {
+                Some(unsafe { output.as_mut_ptr().add(start) } as *const u8)
+            }
             LiteralSource::Rle { .. } => None,
         };
         if let Some(literals_bytes) = literals_bytes {
             return unsafe {
                 decode_sequences_fast_path_unchecked(
                     bitstream,
-                    &workspace.fast_sequence_tables,
+                    state.fast_sequence_tables,
                     sequences_header.sequence_count,
                     literals_bytes,
                     literal_count,
                     output,
                     output_position,
-                    workspace.frame_format,
-                    &mut workspace.repeat_offsets,
+                    state.frame_format,
+                    state.repeat_offsets,
                 )
             };
         }
@@ -223,12 +304,12 @@ fn decode_compressed_block(
 
     let mut decoder = SequenceDecoder::new(
         bitstream,
-        &workspace.sequence_tables,
+        state.sequence_tables,
         sequences_header.sequence_count,
-        workspace.frame_format,
+        state.frame_format,
     )?;
 
-    while let Some(sequence) = decoder.next_sequence(&mut workspace.repeat_offsets) {
+    while let Some(sequence) = decoder.next_sequence(state.repeat_offsets) {
         let sequence = sequence?;
 
         let literal_length = sequence.literal_length as usize;
@@ -272,6 +353,25 @@ fn decode_compressed_block(
     Ok(position)
 }
 
+fn copy_all_literals(
+    literal_source: &LiteralSource,
+    output: &mut [u8],
+    output_position: usize,
+) -> Result<usize, DecodeError> {
+    let mut literal_cursor = 0usize;
+    let position = take_literals(
+        literal_source,
+        &mut literal_cursor,
+        literal_source.len(),
+        output,
+        output_position,
+    )?;
+    if position - output_position > MAX_BLOCK_SIZE {
+        return Err(DecodeError::BlockTooLarge);
+    }
+    Ok(position)
+}
+
 fn take_literals(
     source: &LiteralSource,
     cursor: &mut usize,
@@ -288,6 +388,23 @@ fn take_literals(
                 .get(*cursor..end)
                 .ok_or(DecodeError::CorruptBitstream)?;
             let new_position = copy_literals(slice, output, output_position)?;
+            *cursor = end;
+            Ok(new_position)
+        }
+        LiteralSource::InOutput { start, count } => {
+            let end = cursor
+                .checked_add(length)
+                .ok_or(DecodeError::CorruptBitstream)?;
+            if end > *count {
+                return Err(DecodeError::CorruptBitstream);
+            }
+            let new_position = output_position
+                .checked_add(length)
+                .ok_or(DecodeError::OutputTooSmall)?;
+            if new_position > output.len() {
+                return Err(DecodeError::OutputTooSmall);
+            }
+            output.copy_within(start + *cursor..start + end, output_position);
             *cursor = end;
             Ok(new_position)
         }

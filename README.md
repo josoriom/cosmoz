@@ -14,31 +14,23 @@ Pure Rust compressor and decompressor.
 
 ## Benchmarks
 
-Apple M4, level 1. Input split into 4 MB pieces, one frame per piece, pieces spread over the threads. All outputs verified byte for byte against the input.
+Apple M4. Input split into 4 MB pieces, one frame per piece. Native: single thread, levels 1 and 9. Browser: level 1, pieces spread over the threads. All outputs verified byte for byte against the input.
 
 
 Files: `iron` is a 154 MB mass spectrometry mzML. `pwiz` is a 5.1 MB mzML.
 
 ### Native
 
-| File | Codec | Threads | Size | Ratio | Compress MB/s | Decompress MB/s |
-|---|---|---|---|---|---|---|
-| iron | libzstd | 1 | 89,883,484 | 1.713 | 1695 ± 72 (10) | 1880 ± 28 (10) |
-| iron | ruzstd | 1 | 99,249,402 | 1.552 | 116 ± 1 (10) | 359 ± 3 (10) |
-| iron | osmos/zstd | 1 | 90,143,276 | 1.709 | 1109 ± 10 (10) | 1444 ± 10 (10) |
-| iron | osmos/osmos | 1 | 90,162,459 | 1.708 | 1102 ± 8 (10) | 1689 ± 14 (10) |
-| iron | libzstd | 10 | 89,883,484 | 1.713 | 8546 ± 200 (10) | 10516 ± 250 (10) |
-| iron | ruzstd | 10 | 99,249,402 | 1.552 | 571 ± 12 (10) | 2274 ± 35 (10) |
-| iron | osmos/zstd | 10 | 90,143,276 | 1.709 | 5597 ± 127 (10) | 8380 ± 186 (10) |
-| iron | osmos/osmos | 10 | 90,162,459 | 1.708 | 5548 ± 153 (10) | 8755 ± 261 (10) |
-| pwiz | libzstd | 1 | 2,788,540 | 1.830 | 957 ± 21 (10) | 1441 ± 43 (10) |
-| pwiz | ruzstd | 1 | 3,151,646 | 1.619 | 108 ± 1 (10) | 341 ± 5 (10) |
-| pwiz | osmos/zstd | 1 | 2,184,765 | 2.336 | 393 ± 3 (10) | 984 ± 19 (10) |
-| pwiz | osmos/osmos | 1 | 2,185,394 | 2.335 | 392 ± 4 (10) | 1051 ± 20 (10) |
-| pwiz | libzstd | 10 | 2,788,540 | 1.830 | 1181 ± 18 (10) | 1791 ± 62 (10) |
-| pwiz | ruzstd | 10 | 3,151,646 | 1.619 | 130 ± 1 (10) | 396 ± 4 (10) |
-| pwiz | osmos/zstd | 10 | 2,184,765 | 2.336 | 511 ± 6 (10) | 1246 ± 34 (10) |
-| pwiz | osmos/osmos | 10 | 2,185,394 | 2.335 | 505 ± 7 (10) | 1328 ± 31 (10) |
+| File | Codec | Size L1 | Size L9 | Compress L1 MB/s | Compress L9 MB/s | Decompress L1 MB/s | Decompress L9 MB/s |
+|---|---|---|---|---|---|---|---|
+| iron | libzstd | 89,883,484 | 89,184,642 | 1492 ± 83 (10) | 545 ± 11 (10) | 1782 ± 53 (10) | 1846 ± 26 (10) |
+| iron | ruzstd | 99,249,402 | — | 107 ± 1 (10) | — | 337 ± 1 (10) | — |
+| iron | osmos/zstd | 90,066,036 | 89,047,393 | 984 ± 12 (10) | 571 ± 6 (10) | 1959 ± 11 (10) | 2013 ± 21 (10) |
+| iron | osmos/osmos | 90,085,370 | 89,075,206 | 993 ± 11 (10) | 554 ± 18 (10) | 1964 ± 12 (10) | 2061 ± 15 (10) |
+| pwiz | libzstd | 2,788,540 | 1,883,317 | 915 ± 15 (10) | 166 ± 9 (10) | 1343 ± 28 (10) | 1815 ± 40 (10) |
+| pwiz | ruzstd | 3,151,646 | — | 93 ± 12 (10) | — | 321 ± 3 (10) | — |
+| pwiz | osmos/zstd | 2,184,729 | 1,885,505 | 377 ± 4 (10) | 148 ± 25 (10) | 1099 ± 15 (10) | 1527 ± 45 (10) |
+| pwiz | osmos/osmos | 2,185,364 | 1,887,214 | 372 ± 8 (10) | 160 ± 2 (10) | 1131 ± 24 (10) | 1636 ± 41 (10) |
 
 ### Browser engine (wasm, Node workers)
 

@@ -43,11 +43,60 @@ pub fn decode_many_streams_with_slack(
     if !table.is_ready {
         return Err(DecodeError::BadHuffmanWeights);
     }
-    if stream_count != 4 && stream_count != 8 {
-        return Err(DecodeError::CorruptBitstream);
-    }
     if regenerated_size > output.len() {
         return Err(DecodeError::OutputTooSmall);
+    }
+    let (stream_slices, segment_lengths) = split_streams(input, stream_count, regenerated_size)?;
+
+    let output_pointer = output.as_mut_ptr();
+    if stream_count == 4 {
+        let streams = [
+            stream_slices[0],
+            stream_slices[1],
+            stream_slices[2],
+            stream_slices[3],
+        ];
+        let segments = [
+            segment_lengths[0],
+            segment_lengths[1],
+            segment_lengths[2],
+            segment_lengths[3],
+        ];
+        unsafe { decode_four_streams_unchecked(streams, table, output_pointer, segments) }
+    } else {
+        let streams = [
+            stream_slices[0],
+            stream_slices[1],
+            stream_slices[2],
+            stream_slices[3],
+            stream_slices[4],
+            stream_slices[5],
+            stream_slices[6],
+            stream_slices[7],
+        ];
+        let segments = [
+            segment_lengths[0],
+            segment_lengths[1],
+            segment_lengths[2],
+            segment_lengths[3],
+            segment_lengths[4],
+            segment_lengths[5],
+            segment_lengths[6],
+            segment_lengths[7],
+        ];
+        unsafe { decode_eight_streams_unchecked(streams, table, output_pointer, segments) }
+    }
+}
+
+type StreamSplit<'input> = ([&'input [u8]; 8], [usize; 8]);
+
+pub(crate) fn split_streams(
+    input: &[u8],
+    stream_count: usize,
+    regenerated_size: usize,
+) -> Result<StreamSplit<'_>, DecodeError> {
+    if stream_count != 4 && stream_count != 8 {
+        return Err(DecodeError::CorruptBitstream);
     }
 
     let jump_table_size = (stream_count - 1) * 2;
@@ -107,44 +156,7 @@ pub fn decode_many_streams_with_slack(
         return Err(DecodeError::InputTooShort);
     }
 
-    let output_pointer = output.as_mut_ptr();
-    if stream_count == 4 {
-        let streams = [
-            stream_slices[0],
-            stream_slices[1],
-            stream_slices[2],
-            stream_slices[3],
-        ];
-        let segments = [
-            segment_lengths[0],
-            segment_lengths[1],
-            segment_lengths[2],
-            segment_lengths[3],
-        ];
-        unsafe { decode_four_streams_unchecked(streams, table, output_pointer, segments) }
-    } else {
-        let streams = [
-            stream_slices[0],
-            stream_slices[1],
-            stream_slices[2],
-            stream_slices[3],
-            stream_slices[4],
-            stream_slices[5],
-            stream_slices[6],
-            stream_slices[7],
-        ];
-        let segments = [
-            segment_lengths[0],
-            segment_lengths[1],
-            segment_lengths[2],
-            segment_lengths[3],
-            segment_lengths[4],
-            segment_lengths[5],
-            segment_lengths[6],
-            segment_lengths[7],
-        ];
-        unsafe { decode_eight_streams_unchecked(streams, table, output_pointer, segments) }
-    }
+    Ok((stream_slices, segment_lengths))
 }
 
 #[cfg(test)]

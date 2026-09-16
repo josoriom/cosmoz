@@ -3,8 +3,6 @@ use alloc::vec::Vec;
 
 #[cfg(all(feature = "alloc", feature = "levels"))]
 use crate::block::block_splitter;
-#[cfg(all(feature = "alloc", feature = "levels"))]
-use crate::frame::block_header::BLOCK_HEADER_LENGTH;
 use crate::{
     block::{
         literals_writer::write_literals,
@@ -69,40 +67,34 @@ pub fn write_block(
 
     #[cfg(all(feature = "alloc", feature = "levels"))]
     if workspace.level >= MIN_LEVEL_FOR_BLOCK_SPLITTING {
-        let split_points = block_splitter::split_block(
+        let block_split = block_splitter::split_block(
             &workspace.sequences[..sequence_count],
             &workspace.literals[..literal_count],
             format,
         );
 
-        if !split_points.is_empty() {
-            let mut boundaries: Vec<usize> = Vec::with_capacity(split_points.len() + 2);
-            boundaries.push(0);
-            boundaries.extend_from_slice(&split_points);
-            boundaries.push(sequence_count);
-
-            let single_total_cost = write_compressed_block_body(
-                &workspace.literals[..literal_count],
-                &workspace.sequences[..sequence_count],
+        if block_split.split_points.is_empty() {
+            return commit_single_block(
+                block_content,
                 format,
-                &mut workspace.block_scratch,
-                &mut workspace.huffman_table,
-                &mut workspace.weight_fse_table,
-                &mut workspace.sequence_tables,
+                is_last,
+                output,
+                workspace,
+                literal_count,
+                sequence_count,
                 table_reuse_allowed,
-                &mut workspace.entropy_scratch,
-            )
-            .map(|length| {
-                if length < block_content.len() {
-                    length + BLOCK_HEADER_LENGTH
-                } else {
-                    block_content.len() + BLOCK_HEADER_LENGTH
-                }
-            })
-            .unwrap_or(block_content.len() + BLOCK_HEADER_LENGTH);
-
-            workspace.huffman_table = snapshot_huffman_table(&saved_huffman_table);
-            workspace.sequence_tables = saved_sequence_tables.snapshot();
+                saved_first_offset,
+                saved_second_offset,
+                saved_third_offset,
+                saved_huffman_table,
+                saved_sequence_tables,
+                block_split.piece_literal_counts[0].as_ref(),
+            );
+        } else {
+            let mut boundaries: Vec<usize> = Vec::with_capacity(block_split.split_points.len() + 2);
+            boundaries.push(0);
+            boundaries.extend_from_slice(&block_split.split_points);
+            boundaries.push(sequence_count);
 
             match write_block_as_split_pieces(
                 block_content,
@@ -111,10 +103,11 @@ pub fn write_block(
                 output,
                 workspace,
                 &boundaries,
+                &block_split.piece_literal_counts,
                 literal_count,
                 table_reuse_allowed,
             ) {
-                Ok(Some(split_total)) if split_total < single_total_cost => {
+                Ok(Some(split_total)) => {
                     return Ok(split_total);
                 }
                 Ok(_) => {
@@ -140,6 +133,7 @@ pub fn write_block(
         saved_third_offset,
         saved_huffman_table,
         saved_sequence_tables,
+        None,
     )
 }
 
@@ -158,6 +152,7 @@ fn commit_single_block(
     saved_third_offset: u32,
     saved_huffman_table: HuffmanEncodeTable,
     saved_sequence_tables: SequenceEncodeTables,
+    literal_counts: Option<&[u32; 256]>,
 ) -> Result<usize, EncodeError> {
     let compressed_body_length = write_compressed_block_body(
         &workspace.literals[..literal_count],
@@ -169,6 +164,7 @@ fn commit_single_block(
         &mut workspace.sequence_tables,
         table_reuse_allowed,
         &mut workspace.entropy_scratch,
+        literal_counts,
     );
 
     match compressed_body_length {
@@ -204,6 +200,7 @@ fn write_block_as_split_pieces(
     output: &mut [u8],
     workspace: &mut EncodeWorkspace,
     boundaries: &[usize],
+    piece_literal_counts: &[Option<[u32; 256]>],
     literal_count: usize,
     table_reuse_allowed: bool,
 ) -> Result<Option<usize>, EncodeError> {
@@ -260,6 +257,7 @@ fn write_block_as_split_pieces(
             &mut workspace.sequence_tables,
             piece_table_reuse_allowed,
             &mut workspace.entropy_scratch,
+            piece_literal_counts[piece_index].as_ref(),
         );
 
         let body_length = match body_length {
@@ -340,8 +338,19 @@ fn collect_literals(
     for sequence in sequences {
         let literal_length = sequence.literal_length as usize;
         let literal_end = literal_position + literal_length;
-        literals[literal_position..literal_end]
-            .copy_from_slice(&input[input_position..input_position + literal_length]);
+        if literal_end + 16 <= literals.len() && input_position + literal_length + 16 <= input.len()
+        {
+            unsafe {
+                crate::simd::copy_bytes::copy_bytes_overshoot_unchecked(
+                    input.as_ptr().add(input_position),
+                    literals.as_mut_ptr().add(literal_position),
+                    literal_length,
+                );
+            }
+        } else {
+            literals[literal_position..literal_end]
+                .copy_from_slice(&input[input_position..input_position + literal_length]);
+        }
         literal_position = literal_end;
         input_position += literal_length + sequence.match_length as usize;
     }
@@ -363,6 +372,7 @@ fn write_compressed_block_body(
     sequence_tables: &mut SequenceEncodeTables,
     table_reuse_allowed: bool,
     scratch: &mut [u8],
+    literal_counts: Option<&[u32; 256]>,
 ) -> Result<usize, EncodeError> {
     let literals_length = write_literals(
         literals,
@@ -371,7 +381,7 @@ fn write_compressed_block_body(
         huffman_table,
         weight_fse_table,
         table_reuse_allowed,
-        scratch,
+        literal_counts,
     )?;
     let sequences_output = output
         .get_mut(literals_length..)

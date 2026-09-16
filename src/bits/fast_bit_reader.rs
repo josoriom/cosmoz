@@ -120,6 +120,17 @@ impl FastBitReader {
         status
     }
 
+    pub(crate) fn window(&self) -> (*const u8, *const u8, u32) {
+        (self.position, self.start, self.bits_consumed)
+    }
+
+    pub(crate) unsafe fn move_window_unchecked(&mut self, position: *const u8, bits_consumed: u32) {
+        debug_assert!(position >= self.start && bits_consumed <= 64);
+        self.position = position;
+        self.container = unsafe { read_unaligned_le_u64_unchecked(position) };
+        self.bits_consumed = bits_consumed;
+    }
+
     pub fn is_finished(&self) -> bool {
         self.position == self.start && self.bits_consumed == 64
     }

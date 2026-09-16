@@ -3,10 +3,10 @@ use crate::block::repeat_offsets::RepeatOffsets;
 #[cfg(feature = "checksum")]
 use crate::hash::{xxhash3::XxHash3, xxhash64::XxHash64};
 use crate::{
-    block::block_decoder::{BlockWorkspace, decode_block},
+    block::block_decoder::{BlockWorkspace, decode_block, decode_compressed_block_pair},
     error::DecodeError,
     frame::{
-        block_header::{BLOCK_HEADER_LENGTH, BlockType, read_block_header},
+        block_header::{BLOCK_HEADER_LENGTH, BlockHeader, BlockType, read_block_header},
         chunk_index::ChunkIndex,
         frame_header::{
             FrameFormat, FrameHeader, get_skippable_frame_length, is_skippable_frame,
@@ -106,8 +106,8 @@ mod new_boxed_tests {
             stack_workspace.block.frame_format
         );
         assert_eq!(
-            boxed_workspace.block.huffman_table.is_ready,
-            stack_workspace.block.huffman_table.is_ready
+            boxed_workspace.block.huffman_tables[0].is_ready,
+            stack_workspace.block.huffman_tables[0].is_ready
         );
         assert_eq!(
             boxed_workspace.block.sequence_tables.literal_length_ready,
@@ -186,6 +186,26 @@ pub(crate) fn decode_block_sequence(
             .ok_or(DecodeError::InputTooShort)?;
         input_position += payload_length;
 
+        if block_header.block_type == BlockType::Compressed
+            && !block_header.is_last
+            && let Some((next_header, next_payload)) =
+                read_next_compressed_block(input, input_position)?
+            && let Some(position) = decode_compressed_block_pair(
+                payload,
+                next_payload,
+                output,
+                output_position,
+                workspace,
+            )?
+        {
+            output_position = position;
+            input_position += BLOCK_HEADER_LENGTH + next_header.block_size;
+            if next_header.is_last {
+                break;
+            }
+            continue;
+        }
+
         output_position = decode_block(payload, &block_header, output, output_position, workspace)?;
 
         if block_header.is_last {
@@ -194,6 +214,23 @@ pub(crate) fn decode_block_sequence(
     }
 
     Ok((input_position, output_position))
+}
+
+fn read_next_compressed_block(
+    input: &[u8],
+    input_position: usize,
+) -> Result<Option<(BlockHeader, &[u8])>, DecodeError> {
+    let header_input = input
+        .get(input_position..)
+        .ok_or(DecodeError::InputTooShort)?;
+    let header = read_block_header(header_input)?;
+    if header.block_type != BlockType::Compressed {
+        return Ok(None);
+    }
+    let payload_start = input_position + BLOCK_HEADER_LENGTH;
+    Ok(input
+        .get(payload_start..payload_start + header.block_size)
+        .map(|payload| (header, payload)))
 }
 
 fn skip_frame_body(input: &[u8], header: &FrameHeader) -> Result<usize, DecodeError> {
@@ -333,14 +370,13 @@ fn decode_frame(
 
     #[cfg(feature = "checksum")]
     {
-        let mut hasher = ContentHasher::new(header.format);
-        hasher.update(&output[frame_start_output_position..position]);
-
         let checksum_length = header.checksum_length();
         if header.has_checksum {
             let expected_bytes = input
                 .get(input_position..input_position + checksum_length)
                 .ok_or(DecodeError::InputTooShort)?;
+            let mut hasher = ContentHasher::new(header.format);
+            hasher.update(&output[frame_start_output_position..position]);
             check_content_checksum(expected_bytes, &hasher)?;
         }
         input_position += checksum_length;

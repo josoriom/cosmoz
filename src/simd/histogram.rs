@@ -17,42 +17,23 @@ fn count_symbols_four_tables(input: &[u8], counts: &mut [u32; 256]) {
     let mut table2 = [0u32; 256];
     let mut table3 = [0u32; 256];
 
-    let block_count = input.len() / 16;
-    let unrolled_length = block_count * 16;
-
-    let mut position = 0usize;
-    while position < unrolled_length {
-        bump(&mut table0, input[position]);
-        bump(&mut table1, input[position + 1]);
-        bump(&mut table2, input[position + 2]);
-        bump(&mut table3, input[position + 3]);
-        bump(&mut table0, input[position + 4]);
-        bump(&mut table1, input[position + 5]);
-        bump(&mut table2, input[position + 6]);
-        bump(&mut table3, input[position + 7]);
-        bump(&mut table0, input[position + 8]);
-        bump(&mut table1, input[position + 9]);
-        bump(&mut table2, input[position + 10]);
-        bump(&mut table3, input[position + 11]);
-        bump(&mut table0, input[position + 12]);
-        bump(&mut table1, input[position + 13]);
-        bump(&mut table2, input[position + 14]);
-        bump(&mut table3, input[position + 15]);
-        position += 16;
+    let (words, tail) = input.as_chunks::<4>();
+    for word in words {
+        table0[word[0] as usize] += 1;
+        table1[word[1] as usize] += 1;
+        table2[word[2] as usize] += 1;
+        table3[word[3] as usize] += 1;
     }
 
-    accumulate_tail(&input[unrolled_length..], &mut table0);
+    accumulate_tail(tail, &mut table0);
 
     for symbol in 0..256 {
-        counts[symbol] = table0[symbol]
-            .saturating_add(table1[symbol])
-            .saturating_add(table2[symbol])
-            .saturating_add(table3[symbol]);
+        counts[symbol] = table0[symbol] + table1[symbol] + table2[symbol] + table3[symbol];
     }
 }
 
 fn bump(table: &mut [u32; 256], byte: u8) {
-    table[byte as usize] = table[byte as usize].saturating_add(1);
+    table[byte as usize] += 1;
 }
 
 fn accumulate_tail(input: &[u8], table: &mut [u32; 256]) {

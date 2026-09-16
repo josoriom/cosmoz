@@ -1,7 +1,8 @@
 use crate::{
     entropy::{
         fse_decode_table::FseDecodeTable,
-        huffman_decode::{decode_many_streams_with_slack, decode_one_stream},
+        huffman_decode::{decode_many_streams_with_slack, decode_one_stream, split_streams},
+        huffman_decode_fast::decode_two_sections_unchecked,
         huffman_decode_table::{HuffmanDecodeTable, read_huffman_table},
     },
     error::DecodeError,
@@ -22,6 +23,7 @@ pub enum LiteralSource<'input, 'workspace> {
     Raw(&'input [u8]),
     Rle { byte: u8, count: usize },
     Decoded(&'workspace [u8]),
+    InOutput { start: usize, count: usize },
 }
 
 impl<'input, 'workspace> LiteralSource<'input, 'workspace> {
@@ -30,6 +32,7 @@ impl<'input, 'workspace> LiteralSource<'input, 'workspace> {
             LiteralSource::Raw(bytes) => bytes.len(),
             LiteralSource::Rle { count, .. } => *count,
             LiteralSource::Decoded(bytes) => bytes.len(),
+            LiteralSource::InOutput { count, .. } => *count,
         }
     }
 
@@ -185,6 +188,129 @@ pub fn decode_literals<'input, 'workspace>(
             ))
         }
     }
+}
+
+pub struct LiteralSectionPair {
+    pub first_count: usize,
+    pub first_bytes_used: usize,
+    pub second_count: usize,
+    pub second_bytes_used: usize,
+}
+
+fn is_four_stream_huffman(header: &LiteralsHeader) -> bool {
+    header.stream_count == 4
+        && matches!(
+            header.literals_type,
+            LiteralsType::Compressed | LiteralsType::Treeless
+        )
+}
+
+fn read_section_table<'input>(
+    input: &'input [u8],
+    header: &LiteralsHeader,
+    table: &mut HuffmanDecodeTable,
+    weight_fse_table: &mut FseDecodeTable,
+) -> Result<&'input [u8], DecodeError> {
+    if header.regenerated_size > MAX_BLOCK_SIZE {
+        return Err(DecodeError::BadLiteralsHeader);
+    }
+    let compressed_input = input
+        .get(header.header_length..header.header_length + header.compressed_size)
+        .ok_or(DecodeError::InputTooShort)?;
+    if header.literals_type == LiteralsType::Treeless {
+        if !table.is_ready {
+            return Err(DecodeError::BadLiteralsHeader);
+        }
+        return Ok(compressed_input);
+    }
+    let table_bytes = read_huffman_table(compressed_input, table, weight_fse_table)?;
+    compressed_input
+        .get(table_bytes..)
+        .ok_or(DecodeError::InputTooShort)
+}
+
+/// # Safety
+///
+/// `second_output` must be valid for writes of `MAX_BLOCK_SIZE` bytes and must not overlap
+/// `first_output` or either input.
+pub unsafe fn decode_literal_sections_pair_unchecked(
+    first_input: &[u8],
+    second_input: &[u8],
+    huffman_tables: &mut [HuffmanDecodeTable; 2],
+    current_table: &mut usize,
+    weight_fse_table: &mut FseDecodeTable,
+    first_output: &mut [u8],
+    second_output: *mut u8,
+) -> Result<Option<LiteralSectionPair>, DecodeError> {
+    let first_header = read_literals_header(first_input)?;
+    let second_header = read_literals_header(second_input)?;
+    if !is_four_stream_huffman(&first_header) || !is_four_stream_huffman(&second_header) {
+        return Ok(None);
+    }
+    if first_header.regenerated_size > first_output.len() {
+        return Err(DecodeError::OutputTooSmall);
+    }
+    let first_table = *current_table & 1;
+    let first_streams = read_section_table(
+        first_input,
+        &first_header,
+        &mut huffman_tables[first_table],
+        weight_fse_table,
+    )?;
+    let second_table = if second_header.literals_type == LiteralsType::Compressed {
+        1 - first_table
+    } else {
+        first_table
+    };
+    let second_streams = read_section_table(
+        second_input,
+        &second_header,
+        &mut huffman_tables[second_table],
+        weight_fse_table,
+    )?;
+    let (first_slices, first_segments) =
+        split_streams(first_streams, 4, first_header.regenerated_size)?;
+    let (second_slices, second_segments) =
+        split_streams(second_streams, 4, second_header.regenerated_size)?;
+    unsafe {
+        decode_two_sections_unchecked(
+            [
+                first_slices[0],
+                first_slices[1],
+                first_slices[2],
+                first_slices[3],
+            ],
+            &huffman_tables[first_table],
+            first_output.as_mut_ptr(),
+            [
+                first_segments[0],
+                first_segments[1],
+                first_segments[2],
+                first_segments[3],
+            ],
+            [
+                second_slices[0],
+                second_slices[1],
+                second_slices[2],
+                second_slices[3],
+            ],
+            &huffman_tables[second_table],
+            second_output,
+            [
+                second_segments[0],
+                second_segments[1],
+                second_segments[2],
+                second_segments[3],
+            ],
+        )?;
+    }
+    *current_table = second_table;
+    Ok(Some(LiteralSectionPair {
+        first_count: first_header.regenerated_size,
+        first_bytes_used: first_header.header_length + first_header.compressed_size,
+        second_count: second_header.regenerated_size,
+        second_bytes_used: second_header.header_length + second_header.compressed_size,
+    }))
 }
 
 fn resolve_stream_count(format: FrameFormat, header_stream_count: u8) -> usize {

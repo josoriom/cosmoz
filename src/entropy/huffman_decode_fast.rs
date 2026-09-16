@@ -1,6 +1,8 @@
 use crate::{
-    bits::fast_bit_reader::{FastBitReader, ReloadStatus},
-    entropy::huffman_decode_table::HuffmanDecodeTable,
+    bits::fast_bit_reader::FastBitReader,
+    entropy::huffman_decode_table::{
+        HuffmanDecodeEntry, HuffmanDecodeTable, MAX_HUFFMAN_TABLE_SIZE,
+    },
     error::DecodeError,
 };
 
@@ -16,59 +18,121 @@ unsafe fn make_reader_unchecked(
     }
 }
 
-#[allow(clippy::needless_range_loop)]
-unsafe fn decode_streams_interleaved_unchecked<const STREAMS: usize>(
-    readers: &mut [FastBitReader; STREAMS],
-    table: &HuffmanDecodeTable,
-    outputs: [*mut u8; STREAMS],
-    segment_lengths: [usize; STREAMS],
-) {
-    debug_assert!(table.is_ready);
-    let max_bits = table.max_bits as u32;
-    let lookups_per_refill = (57 / max_bits.max(1)) as usize;
-    let iteration_slack = lookups_per_refill * 2;
-    let single_entries = &table.entries;
-    let mut positions = [0usize; STREAMS];
+#[derive(Clone, Copy)]
+struct StreamCursor<'table> {
+    reader: FastBitReader,
+    bits: u64,
+    window: *const u8,
+    start: *const u8,
+    output: *mut u8,
+    remaining: usize,
+    entries: &'table [HuffmanDecodeEntry; MAX_HUFFMAN_TABLE_SIZE],
+    index_shift: u32,
+    window_moved: bool,
+}
 
-    'batches: loop {
-        for stream in 0..STREAMS {
-            if segment_lengths[stream] - positions[stream] < iteration_slack {
-                break 'batches;
-            }
-        }
-        for stream in 0..STREAMS {
-            let status = unsafe { readers[stream].refill_unchecked() };
-            if status != ReloadStatus::Unfinished {
-                break 'batches;
-            }
-        }
-        for _ in 0..lookups_per_refill {
-            for stream in 0..STREAMS {
-                let index = readers[stream].peek(max_bits) as usize;
-                debug_assert!(index < single_entries.len());
-                let entry = unsafe { *single_entries.get_unchecked(index) };
-                unsafe {
-                    *outputs[stream].add(positions[stream]) = entry.symbol;
-                }
-                readers[stream].skip(entry.bit_count as u32);
-                positions[stream] += 1;
-            }
-        }
+impl<'table> StreamCursor<'table> {
+    unsafe fn new_unchecked(
+        stream: &[u8],
+        padding_buffer: &mut [u8; 16],
+        table: &'table HuffmanDecodeTable,
+        output: *mut u8,
+        length: usize,
+    ) -> Result<Self, DecodeError> {
+        debug_assert!(table.is_ready);
+        let reader = unsafe { make_reader_unchecked(stream, padding_buffer)? };
+        let (window, start, bits_consumed) = reader.window();
+        let bits = if bits_consumed < 64 {
+            (unsafe { window.cast::<u64>().read_unaligned() }.to_le() | 1) << bits_consumed
+        } else {
+            1u64 << 63
+        };
+        Ok(Self {
+            reader,
+            bits,
+            window,
+            start,
+            output,
+            remaining: length,
+            entries: &table.entries,
+            index_shift: 64 - (table.max_bits as u32).max(1),
+            window_moved: false,
+        })
     }
 
-    for stream in 0..STREAMS {
-        while positions[stream] < segment_lengths[stream] {
+    fn safe_rounds(&self) -> usize {
+        let input_room = unsafe { self.window.offset_from(self.start) } as usize;
+        let consumed_bytes = (self.bits.trailing_zeros() >> 3) as usize;
+        (input_room.saturating_sub(consumed_bytes) / 7).min(self.remaining / 5)
+    }
+
+    #[inline(always)]
+    unsafe fn decode_round_unchecked(&mut self) {
+        debug_assert!(self.remaining >= 5);
+        let mut bits = self.bits;
+        for symbol_index in 0..5 {
+            let entry = unsafe {
+                *self
+                    .entries
+                    .get_unchecked((bits >> self.index_shift) as usize)
+            };
             unsafe {
-                let _ = readers[stream].refill_unchecked();
+                *self.output.add(symbol_index) = entry.symbol;
             }
-            let index = peek_window_padded(&readers[stream], max_bits) as usize;
-            debug_assert!(index < single_entries.len());
-            let entry = unsafe { *single_entries.get_unchecked(index) };
+            bits <<= entry.bit_count;
+        }
+        self.output = unsafe { self.output.add(5) };
+        self.remaining -= 5;
+        let trailing = bits.trailing_zeros();
+        self.window = unsafe { self.window.sub((trailing >> 3) as usize) };
+        self.bits =
+            (unsafe { self.window.cast::<u64>().read_unaligned() }.to_le() | 1) << (trailing & 7);
+        self.window_moved = true;
+    }
+
+    unsafe fn finish_unchecked(mut self) -> bool {
+        debug_assert!(self.window >= self.start);
+        if self.window_moved {
             unsafe {
-                *outputs[stream].add(positions[stream]) = entry.symbol;
+                self.reader
+                    .move_window_unchecked(self.window, self.bits.trailing_zeros());
             }
-            readers[stream].skip(entry.bit_count as u32);
-            positions[stream] += 1;
+        }
+        let width = 64 - self.index_shift;
+        while self.remaining > 0 {
+            unsafe {
+                let _ = self.reader.refill_unchecked();
+            }
+            let index = peek_window_padded(&self.reader, width) as usize;
+            let entry = unsafe { *self.entries.get_unchecked(index) };
+            unsafe {
+                *self.output = entry.symbol;
+                self.output = self.output.add(1);
+            }
+            self.reader.skip(entry.bit_count as u32);
+            self.remaining -= 1;
+        }
+        self.reader.is_finished()
+    }
+}
+
+unsafe fn decode_rounds_unchecked<const STREAMS: usize>(cursors: &mut [StreamCursor; STREAMS]) {
+    debug_assert!(STREAMS > 0);
+    loop {
+        let rounds = cursors
+            .iter()
+            .map(|cursor| cursor.safe_rounds())
+            .min()
+            .unwrap_or(0);
+        if rounds == 0 {
+            return;
+        }
+        for _ in 0..rounds {
+            for cursor in cursors.iter_mut() {
+                unsafe {
+                    cursor.decode_round_unchecked();
+                }
+            }
         }
     }
 }
@@ -83,110 +147,140 @@ fn peek_window_padded(reader: &FastBitReader, width: u32) -> u64 {
     }
 }
 
+unsafe fn start_section_unchecked<'table>(
+    streams: &[&[u8]],
+    padding_buffers: &mut [[u8; 16]],
+    table: &'table HuffmanDecodeTable,
+    output: *mut u8,
+    segment_sizes: &[usize],
+    cursors: &mut [Option<StreamCursor<'table>>],
+) -> Result<(), DecodeError> {
+    debug_assert!(streams.len() == segment_sizes.len() && streams.len() <= cursors.len());
+    let mut offset = 0usize;
+    for stream in 0..streams.len() {
+        cursors[stream] = Some(unsafe {
+            StreamCursor::new_unchecked(
+                streams[stream],
+                &mut padding_buffers[stream],
+                table,
+                output.add(offset),
+                segment_sizes[stream],
+            )?
+        });
+        offset += segment_sizes[stream];
+    }
+    Ok(())
+}
+
+unsafe fn finish_cursors_unchecked(cursors: &[StreamCursor]) -> Result<(), DecodeError> {
+    debug_assert!(!cursors.is_empty());
+    let mut all_finished = true;
+    for cursor in cursors {
+        all_finished &= unsafe { cursor.finish_unchecked() };
+    }
+    if all_finished {
+        Ok(())
+    } else {
+        Err(DecodeError::CorruptBitstream)
+    }
+}
+
 pub(crate) unsafe fn decode_four_streams_unchecked(
     streams: [&[u8]; 4],
     table: &HuffmanDecodeTable,
     output: *mut u8,
     segment_sizes: [usize; 4],
 ) -> Result<(), DecodeError> {
-    debug_assert!(table.is_ready);
-    debug_assert!(streams.iter().all(|stream| !stream.is_empty()));
-
     let mut padding_buffers = [[0u8; 16]; 4];
-    let [padding_0, padding_1, padding_2, padding_3] = &mut padding_buffers;
-    let reader_0 = unsafe { make_reader_unchecked(streams[0], padding_0)? };
-    let reader_1 = unsafe { make_reader_unchecked(streams[1], padding_1)? };
-    let reader_2 = unsafe { make_reader_unchecked(streams[2], padding_2)? };
-    let reader_3 = unsafe { make_reader_unchecked(streams[3], padding_3)? };
-
-    let offset_0 = 0usize;
-    let offset_1 = offset_0 + segment_sizes[0];
-    let offset_2 = offset_1 + segment_sizes[1];
-    let offset_3 = offset_2 + segment_sizes[2];
-
-    let mut readers = [reader_0, reader_1, reader_2, reader_3];
-    let outputs = unsafe {
-        [
-            output.add(offset_0),
-            output.add(offset_1),
-            output.add(offset_2),
-            output.add(offset_3),
-        ]
-    };
+    let mut cursors = [None; 4];
     unsafe {
-        decode_streams_interleaved_unchecked(&mut readers, table, outputs, segment_sizes);
+        start_section_unchecked(
+            &streams,
+            &mut padding_buffers,
+            table,
+            output,
+            &segment_sizes,
+            &mut cursors,
+        )?;
     }
-
-    let all_finished = readers.iter().all(|reader| reader.is_finished());
-    if !all_finished {
-        return Err(DecodeError::CorruptBitstream);
+    let mut cursors = cursors.map(|cursor| cursor.unwrap());
+    unsafe {
+        decode_rounds_unchecked(&mut cursors);
+        finish_cursors_unchecked(&cursors)
     }
-    Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) unsafe fn decode_eight_streams_unchecked(
     streams: [&[u8]; 8],
     table: &HuffmanDecodeTable,
     output: *mut u8,
     segment_sizes: [usize; 8],
 ) -> Result<(), DecodeError> {
-    debug_assert!(table.is_ready);
-    debug_assert!(streams.iter().all(|stream| !stream.is_empty()));
-
     let mut padding_buffers = [[0u8; 16]; 8];
-    let [
-        padding_0,
-        padding_1,
-        padding_2,
-        padding_3,
-        padding_4,
-        padding_5,
-        padding_6,
-        padding_7,
-    ] = &mut padding_buffers;
-    let reader_0 = unsafe { make_reader_unchecked(streams[0], padding_0)? };
-    let reader_1 = unsafe { make_reader_unchecked(streams[1], padding_1)? };
-    let reader_2 = unsafe { make_reader_unchecked(streams[2], padding_2)? };
-    let reader_3 = unsafe { make_reader_unchecked(streams[3], padding_3)? };
-    let reader_4 = unsafe { make_reader_unchecked(streams[4], padding_4)? };
-    let reader_5 = unsafe { make_reader_unchecked(streams[5], padding_5)? };
-    let reader_6 = unsafe { make_reader_unchecked(streams[6], padding_6)? };
-    let reader_7 = unsafe { make_reader_unchecked(streams[7], padding_7)? };
-
-    let offset_0 = 0usize;
-    let offset_1 = offset_0 + segment_sizes[0];
-    let offset_2 = offset_1 + segment_sizes[1];
-    let offset_3 = offset_2 + segment_sizes[2];
-    let offset_4 = offset_3 + segment_sizes[3];
-    let offset_5 = offset_4 + segment_sizes[4];
-    let offset_6 = offset_5 + segment_sizes[5];
-    let offset_7 = offset_6 + segment_sizes[6];
-
-    let mut readers = [
-        reader_0, reader_1, reader_2, reader_3, reader_4, reader_5, reader_6, reader_7,
-    ];
-    let outputs = unsafe {
-        [
-            output.add(offset_0),
-            output.add(offset_1),
-            output.add(offset_2),
-            output.add(offset_3),
-            output.add(offset_4),
-            output.add(offset_5),
-            output.add(offset_6),
-            output.add(offset_7),
-        ]
-    };
+    let mut cursors = [None; 8];
     unsafe {
-        decode_streams_interleaved_unchecked(&mut readers, table, outputs, segment_sizes);
+        start_section_unchecked(
+            &streams,
+            &mut padding_buffers,
+            table,
+            output,
+            &segment_sizes,
+            &mut cursors,
+        )?;
     }
+    let mut cursors = cursors.map(|cursor| cursor.unwrap());
+    unsafe {
+        decode_rounds_unchecked(&mut cursors);
+        finish_cursors_unchecked(&cursors)
+    }
+}
 
-    let all_finished = readers.iter().all(|reader| reader.is_finished());
-    if !all_finished {
-        return Err(DecodeError::CorruptBitstream);
+#[allow(clippy::too_many_arguments)]
+pub(crate) unsafe fn decode_two_sections_unchecked(
+    first_streams: [&[u8]; 4],
+    first_table: &HuffmanDecodeTable,
+    first_output: *mut u8,
+    first_segment_sizes: [usize; 4],
+    second_streams: [&[u8]; 4],
+    second_table: &HuffmanDecodeTable,
+    second_output: *mut u8,
+    second_segment_sizes: [usize; 4],
+) -> Result<(), DecodeError> {
+    debug_assert!(first_table.is_ready && second_table.is_ready);
+    let mut padding_buffers = [[0u8; 16]; 8];
+    let mut cursors = [None; 8];
+    let (first_padding, second_padding) = padding_buffers.split_at_mut(4);
+    let (first_cursors, second_cursors) = cursors.split_at_mut(4);
+    unsafe {
+        start_section_unchecked(
+            &first_streams,
+            first_padding,
+            first_table,
+            first_output,
+            &first_segment_sizes,
+            first_cursors,
+        )?;
+        start_section_unchecked(
+            &second_streams,
+            second_padding,
+            second_table,
+            second_output,
+            &second_segment_sizes,
+            second_cursors,
+        )?;
     }
-    Ok(())
+    let mut cursors = cursors.map(|cursor| cursor.unwrap());
+    unsafe {
+        decode_rounds_unchecked(&mut cursors);
+    }
+    let mut first_group = [cursors[0], cursors[1], cursors[2], cursors[3]];
+    let mut second_group = [cursors[4], cursors[5], cursors[6], cursors[7]];
+    unsafe {
+        decode_rounds_unchecked(&mut first_group);
+        decode_rounds_unchecked(&mut second_group);
+        finish_cursors_unchecked(&first_group)?;
+        finish_cursors_unchecked(&second_group)
+    }
 }
 
 #[cfg(test)]

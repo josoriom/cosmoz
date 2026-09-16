@@ -22,7 +22,7 @@ pub fn write_literals(
     huffman_table: &mut HuffmanEncodeTable,
     weight_fse_table: &mut FseEncodeTable,
     table_reuse_allowed: bool,
-    scratch: &mut [u8],
+    known_counts: Option<&[u32; 256]>,
 ) -> Result<usize, EncodeError> {
     if input.is_empty() {
         return write_raw_literals(input, output);
@@ -40,7 +40,7 @@ pub fn write_literals(
         huffman_table,
         weight_fse_table,
         table_reuse_allowed,
-        scratch,
+        known_counts,
     ) {
         Ok(written) => Ok(written),
         Err(_) => write_raw_literals(input, output),
@@ -101,10 +101,16 @@ fn write_compressed_literals(
     huffman_table: &mut HuffmanEncodeTable,
     weight_fse_table: &mut FseEncodeTable,
     table_reuse_allowed: bool,
-    _scratch: &mut [u8],
+    known_counts: Option<&[u32; 256]>,
 ) -> Result<usize, EncodeError> {
-    let mut counts = [0u32; 256];
-    count_symbols(input, &mut counts);
+    let counts = match known_counts {
+        Some(known_counts) => *known_counts,
+        None => {
+            let mut counts = [0u32; 256];
+            count_symbols(input, &mut counts);
+            counts
+        }
+    };
 
     let treeless_bit_cost = if table_reuse_allowed {
         estimate_huffman_bit_cost(&counts, huffman_table)
@@ -350,7 +356,6 @@ behind the distant hills and the wind carries the scent of rain across the quiet
     fn round_trip(input: &[u8], format: FrameFormat) -> Vec<u8> {
         let mut huffman_encode_table = HuffmanEncodeTable::new();
         let mut weight_fse_table = FseEncodeTable::new();
-        let mut scratch = vec![0u8; input.len() * 2 + 1024];
         let mut output = vec![0u8; input.len() * 2 + 1024];
 
         let bytes_written = write_literals(
@@ -360,7 +365,7 @@ behind the distant hills and the wind carries the scent of rain across the quiet
             &mut huffman_encode_table,
             &mut weight_fse_table,
             false,
-            &mut scratch,
+            None,
         )
         .unwrap();
 
@@ -383,6 +388,7 @@ behind the distant hills and the wind carries the scent of rain across the quiet
             LiteralSource::Raw(bytes) => bytes.to_vec(),
             LiteralSource::Decoded(bytes) => bytes.to_vec(),
             LiteralSource::Rle { byte, count } => vec![byte; count],
+            LiteralSource::InOutput { .. } => unreachable!(),
         }
     }
 
@@ -403,7 +409,6 @@ behind the distant hills and the wind carries the scent of rain across the quiet
 
         let mut huffman_encode_table = HuffmanEncodeTable::new();
         let mut weight_fse_table = FseEncodeTable::new();
-        let mut scratch = vec![0u8; input.len() * 2 + 1024];
         let mut output = vec![0u8; input.len() * 2 + 1024];
         let bytes_written = write_literals(
             &input,
@@ -412,7 +417,7 @@ behind the distant hills and the wind carries the scent of rain across the quiet
             &mut huffman_encode_table,
             &mut weight_fse_table,
             false,
-            &mut scratch,
+            None,
         )
         .unwrap();
 
@@ -435,7 +440,6 @@ behind the distant hills and the wind carries the scent of rain across the quiet
 
         let mut huffman_encode_table = HuffmanEncodeTable::new();
         let mut weight_fse_table = FseEncodeTable::new();
-        let mut scratch = vec![0u8; input.len() * 2 + 1024];
         let mut output = vec![0u8; input.len() * 2 + 1024];
         let bytes_written = write_literals(
             &input,
@@ -444,7 +448,7 @@ behind the distant hills and the wind carries the scent of rain across the quiet
             &mut huffman_encode_table,
             &mut weight_fse_table,
             false,
-            &mut scratch,
+            None,
         )
         .unwrap();
 
@@ -465,7 +469,6 @@ behind the distant hills and the wind carries the scent of rain across the quiet
 
         let mut huffman_encode_table = HuffmanEncodeTable::new();
         let mut weight_fse_table = FseEncodeTable::new();
-        let mut scratch = vec![0u8; input.len() * 2];
         let mut output = vec![0u8; input.len() * 2];
         let bytes_written = write_literals(
             &input,
@@ -474,7 +477,7 @@ behind the distant hills and the wind carries the scent of rain across the quiet
             &mut huffman_encode_table,
             &mut weight_fse_table,
             false,
-            &mut scratch,
+            None,
         )
         .unwrap();
         let header = read_literals_header(&output[..bytes_written]).unwrap();
@@ -494,7 +497,6 @@ behind the distant hills and the wind carries the scent of rain across the quiet
 
         let mut huffman_encode_table = HuffmanEncodeTable::new();
         let mut weight_fse_table = FseEncodeTable::new();
-        let mut scratch = vec![0u8; input.len() * 2];
         let mut output = vec![0u8; input.len() * 2];
         let bytes_written = write_literals(
             &input,
@@ -503,7 +505,7 @@ behind the distant hills and the wind carries the scent of rain across the quiet
             &mut huffman_encode_table,
             &mut weight_fse_table,
             false,
-            &mut scratch,
+            None,
         )
         .unwrap();
         let header = read_literals_header(&output[..bytes_written]).unwrap();

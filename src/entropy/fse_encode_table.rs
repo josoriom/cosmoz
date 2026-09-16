@@ -215,20 +215,7 @@ fn find_largest_count_symbol(counts: &[u32]) -> usize {
 }
 
 fn largest_symbol_is_valid(counts: &[u32], normalized_counts: &[i16]) -> bool {
-    let largest_symbol = find_largest_count_symbol(counts);
-    let largest_value = normalized_counts[largest_symbol] as i64;
-    if largest_value <= 0 {
-        return false;
-    }
-    counts
-        .iter()
-        .enumerate()
-        .filter(|&(symbol, &count)| count > 0 && symbol != largest_symbol)
-        .all(|(symbol, _)| {
-            let value = normalized_counts[symbol];
-            let effective_value = if value == -1 { 1 } else { value as i64 };
-            effective_value <= largest_value
-        })
+    normalized_counts[find_largest_count_symbol(counts)] > 0
 }
 
 pub fn build_fse_encode_table(

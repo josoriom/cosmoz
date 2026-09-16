@@ -60,67 +60,105 @@ struct SplitContext<'a> {
     byte_prefix: &'a [u32],
 }
 
-fn literal_range<'a>(context: &SplitContext<'a>, start: usize, end: usize) -> &'a [u8] {
-    let start_byte = context.literal_prefix[start] as usize;
-    let end_byte = context.literal_prefix[end] as usize;
-    &context.literals[start_byte..end_byte]
+struct TrialCounts {
+    byte_counts: [u32; 256],
+    literal_length_counts: [u32; 36],
+    match_length_counts: [u32; 53],
+    offset_counts: [u32; 32],
+    extra_bits_total: u64,
+    literal_count: usize,
+    sequence_count: usize,
 }
 
 fn byte_length(context: &SplitContext, start: usize, end: usize) -> usize {
     (context.byte_prefix[end] - context.byte_prefix[start]) as usize
 }
 
-fn trial_encoded_size(context: &SplitContext, start: usize, end: usize) -> usize {
-    trial_encoded_size_slices(
-        &context.sequences[start..end],
-        literal_range(context, start, end),
-    )
-}
-
 fn used_symbol_count(counts: &[u32]) -> usize {
     counts.iter().filter(|&&count| count > 0).count()
 }
 
-fn trial_encoded_size_slices(sequences: &[SequenceRecord], literals: &[u8]) -> usize {
-    let mut byte_counts = [0u32; 256];
-    count_symbols(literals, &mut byte_counts);
-    let literal_bits = cross_entropy_bits(&byte_counts, literals.len() as u32);
-    let literal_bytes = if literals.is_empty() {
+fn count_range(context: &SplitContext, start: usize, end: usize) -> TrialCounts {
+    let start_byte = context.literal_prefix[start] as usize;
+    let end_byte = if end == context.sequences.len() {
+        context.literals.len()
+    } else {
+        context.literal_prefix[end] as usize
+    };
+    let mut trial = TrialCounts {
+        byte_counts: [0u32; 256],
+        literal_length_counts: [0u32; 36],
+        match_length_counts: [0u32; 53],
+        offset_counts: [0u32; 32],
+        extra_bits_total: 0,
+        literal_count: end_byte - start_byte,
+        sequence_count: end - start,
+    };
+    count_symbols(
+        &context.literals[start_byte..end_byte],
+        &mut trial.byte_counts,
+    );
+    for record in &context.sequences[start..end] {
+        let (literal_length_code, _) = get_literal_length_code(record.literal_length);
+        let (match_length_code, _) = get_match_length_code(record.match_length);
+        let (offset_code, _) = get_offset_code(record.offset_value);
+        trial.literal_length_counts[literal_length_code as usize] += 1;
+        trial.match_length_counts[match_length_code as usize] += 1;
+        trial.offset_counts[offset_code as usize] += 1;
+        trial.extra_bits_total += get_literal_length_extra_bits(literal_length_code) as u64;
+        trial.extra_bits_total += get_match_length_extra_bits(match_length_code) as u64;
+        trial.extra_bits_total += offset_code as u64;
+    }
+    trial
+}
+
+fn add_counts(total: &mut [u32], part: &[u32]) {
+    for (total_count, &part_count) in total.iter_mut().zip(part) {
+        *total_count += part_count;
+    }
+}
+
+fn merge_counts(first: &TrialCounts, second: &TrialCounts) -> TrialCounts {
+    let mut merged = TrialCounts {
+        byte_counts: first.byte_counts,
+        literal_length_counts: first.literal_length_counts,
+        match_length_counts: first.match_length_counts,
+        offset_counts: first.offset_counts,
+        extra_bits_total: first.extra_bits_total + second.extra_bits_total,
+        literal_count: first.literal_count + second.literal_count,
+        sequence_count: first.sequence_count + second.sequence_count,
+    };
+    add_counts(&mut merged.byte_counts, &second.byte_counts);
+    add_counts(
+        &mut merged.literal_length_counts,
+        &second.literal_length_counts,
+    );
+    add_counts(&mut merged.match_length_counts, &second.match_length_counts);
+    add_counts(&mut merged.offset_counts, &second.offset_counts);
+    merged
+}
+
+fn trial_encoded_size(trial: &TrialCounts) -> usize {
+    let literal_bits = cross_entropy_bits(&trial.byte_counts, trial.literal_count as u32);
+    let literal_bytes = if trial.literal_count == 0 {
         0
     } else {
-        let used_symbols = used_symbol_count(&byte_counts);
+        let used_symbols = used_symbol_count(&trial.byte_counts);
         let huffman_table_estimate = HUFFMAN_TABLE_BASE_ESTIMATE + used_symbols.div_ceil(2);
         (literal_bits as usize).div_ceil(8) + huffman_table_estimate
     };
 
-    let mut literal_length_counts = [0u32; 36];
-    let mut match_length_counts = [0u32; 53];
-    let mut offset_counts = [0u32; 32];
-    let mut extra_bits_total = 0u64;
-
-    for record in sequences {
-        let (literal_length_code, _) = get_literal_length_code(record.literal_length);
-        let (match_length_code, _) = get_match_length_code(record.match_length);
-        let (offset_code, _) = get_offset_code(record.offset_value);
-        literal_length_counts[literal_length_code as usize] += 1;
-        match_length_counts[match_length_code as usize] += 1;
-        offset_counts[offset_code as usize] += 1;
-        extra_bits_total += get_literal_length_extra_bits(literal_length_code) as u64;
-        extra_bits_total += get_match_length_extra_bits(match_length_code) as u64;
-        extra_bits_total += offset_code as u64;
-    }
-
-    let sequence_bytes = if sequences.is_empty() {
+    let sequence_bytes = if trial.sequence_count == 0 {
         1
     } else {
-        let sequence_count = sequences.len() as u32;
-        let sequence_bits = cross_entropy_bits(&literal_length_counts, sequence_count)
-            + cross_entropy_bits(&match_length_counts, sequence_count)
-            + cross_entropy_bits(&offset_counts, sequence_count)
-            + extra_bits_total;
-        let distinct_codes = used_symbol_count(&literal_length_counts)
-            + used_symbol_count(&match_length_counts)
-            + used_symbol_count(&offset_counts);
+        let sequence_count = trial.sequence_count as u32;
+        let sequence_bits = cross_entropy_bits(&trial.literal_length_counts, sequence_count)
+            + cross_entropy_bits(&trial.match_length_counts, sequence_count)
+            + cross_entropy_bits(&trial.offset_counts, sequence_count)
+            + trial.extra_bits_total;
+        let distinct_codes = used_symbol_count(&trial.literal_length_counts)
+            + used_symbol_count(&trial.match_length_counts)
+            + used_symbol_count(&trial.offset_counts);
         let sequence_table_estimate = SEQUENCE_TABLES_BASE_ESTIMATE + distinct_codes.div_ceil(2);
         (sequence_bits as usize).div_ceil(8) + sequence_table_estimate
     };
@@ -128,38 +166,56 @@ fn trial_encoded_size_slices(sequences: &[SequenceRecord], literals: &[u8]) -> u
     LITERALS_HEADER_ESTIMATE + literal_bytes + sequence_bytes
 }
 
-fn derive_splits(context: &SplitContext, start: usize, end: usize, splits: &mut Vec<usize>) {
-    if splits.len() >= MAX_BLOCK_SPLITS {
+pub struct BlockSplit {
+    pub split_points: Vec<usize>,
+    pub piece_literal_counts: Vec<Option<[u32; 256]>>,
+}
+
+fn derive_splits(
+    context: &SplitContext,
+    start: usize,
+    end: usize,
+    whole: Option<&TrialCounts>,
+    block_split: &mut BlockSplit,
+) {
+    let whole_literal_counts = whole.map(|whole| whole.byte_counts);
+    if block_split.split_points.len() >= MAX_BLOCK_SPLITS {
+        block_split.piece_literal_counts.push(whole_literal_counts);
         return;
     }
     let sequence_count = end - start;
-    if sequence_count < MIN_SPLIT_SEQUENCES {
-        return;
-    }
     let literal_bytes = (context.literal_prefix[end] - context.literal_prefix[start]) as usize;
-    if literal_bytes < MIN_SPLIT_LITERAL_BYTES {
-        return;
-    }
-
     let mid = start + sequence_count / 2;
-
-    let first_bytes = byte_length(context, start, mid);
-    let second_bytes = byte_length(context, mid, end);
-    if first_bytes < MIN_SPLIT_BLOCK_BYTES || second_bytes < MIN_SPLIT_BLOCK_BYTES {
+    if sequence_count < MIN_SPLIT_SEQUENCES
+        || literal_bytes < MIN_SPLIT_LITERAL_BYTES
+        || byte_length(context, start, mid) < MIN_SPLIT_BLOCK_BYTES
+        || byte_length(context, mid, end) < MIN_SPLIT_BLOCK_BYTES
+    {
+        block_split.piece_literal_counts.push(whole_literal_counts);
         return;
     }
 
-    let whole_size = trial_encoded_size(context, start, end);
-    let first_size = trial_encoded_size(context, start, mid);
-    let second_size = trial_encoded_size(context, mid, end);
-
-    let split_size = first_size
-        .saturating_add(second_size)
+    let first = count_range(context, start, mid);
+    let second = count_range(context, mid, end);
+    let merged;
+    let whole = match whole {
+        Some(whole) => whole,
+        None => {
+            merged = merge_counts(&first, &second);
+            &merged
+        }
+    };
+    let split_size = trial_encoded_size(&first)
+        .saturating_add(trial_encoded_size(&second))
         .saturating_add(BLOCK_HEADER_LENGTH);
-    if split_size < whole_size {
-        derive_splits(context, start, mid, splits);
-        splits.push(mid);
-        derive_splits(context, mid, end, splits);
+    if split_size < trial_encoded_size(whole) {
+        derive_splits(context, start, mid, Some(&first), block_split);
+        block_split.split_points.push(mid);
+        derive_splits(context, mid, end, Some(&second), block_split);
+    } else {
+        block_split
+            .piece_literal_counts
+            .push(Some(whole.byte_counts));
     }
 }
 
@@ -167,10 +223,15 @@ pub fn split_block(
     sequences: &[SequenceRecord],
     literals: &[u8],
     _format: FrameFormat,
-) -> Vec<usize> {
+) -> BlockSplit {
+    let mut block_split = BlockSplit {
+        split_points: Vec::new(),
+        piece_literal_counts: Vec::new(),
+    };
     let sequence_count = sequences.len();
     if sequence_count <= MIN_SEQUENCES_TO_CONSIDER_SPLITTING {
-        return Vec::new();
+        block_split.piece_literal_counts.push(None);
+        return block_split;
     }
 
     let mut literal_prefix = Vec::with_capacity(sequence_count + 1);
@@ -193,9 +254,8 @@ pub fn split_block(
         byte_prefix: &byte_prefix,
     };
 
-    let mut splits = Vec::new();
-    derive_splits(&context, 0, sequence_count, &mut splits);
-    splits
+    derive_splits(&context, 0, sequence_count, None, &mut block_split);
+    block_split
 }
 
 #[cfg(test)]
@@ -214,7 +274,11 @@ mod tests {
     fn returns_no_splits_for_few_sequences() {
         let sequences = [make_sequence(1, 4, 1); 4];
         let literals = [0u8; 4];
-        assert!(split_block(&sequences, &literals, FrameFormat::Zstd).is_empty());
+        assert!(
+            split_block(&sequences, &literals, FrameFormat::Zstd)
+                .split_points
+                .is_empty()
+        );
     }
 
     #[test]
@@ -224,7 +288,11 @@ mod tests {
             sequences.push(make_sequence(1, 4, 1));
         }
         let literals = [0u8; 400];
-        assert!(split_block(&sequences, &literals, FrameFormat::Zstd).is_empty());
+        assert!(
+            split_block(&sequences, &literals, FrameFormat::Zstd)
+                .split_points
+                .is_empty()
+        );
     }
 
     #[test]
@@ -242,7 +310,7 @@ mod tests {
                 if index < 2000 { target } else { target + 40 };
         }
 
-        let splits = split_block(&sequences, &literals, FrameFormat::Zstd);
+        let splits = split_block(&sequences, &literals, FrameFormat::Zstd).split_points;
         assert!(!splits.is_empty());
         for &split in &splits {
             assert!(split > 0 && split < sequences.len());
@@ -257,6 +325,10 @@ mod tests {
             sequences.push(make_sequence(4, 4, 1));
             literals.extend_from_slice(b"abcd");
         }
-        assert!(split_block(&sequences, &literals, FrameFormat::Zstd).is_empty());
+        assert!(
+            split_block(&sequences, &literals, FrameFormat::Zstd)
+                .split_points
+                .is_empty()
+        );
     }
 }

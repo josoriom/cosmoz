@@ -66,7 +66,35 @@ struct DecodedSequence {
     offset: u32,
 }
 
+#[inline(always)]
+unsafe fn read_repeat_offset_unchecked(
+    stream: &mut SequenceStreamState,
+    offset_code: u32,
+    literal_length_is_zero: bool,
+    repeat_offsets: &mut RepeatOffsets,
+) -> u32 {
+    if offset_code == 0 {
+        if literal_length_is_zero {
+            core::mem::swap(&mut repeat_offsets.first, &mut repeat_offsets.second);
+        }
+        return repeat_offsets.first;
+    }
+    let repeat_index = 1 + literal_length_is_zero as u32 + stream.reader.read(1) as u32;
+    let offset = match repeat_index {
+        1 => repeat_offsets.second,
+        2 => repeat_offsets.third,
+        _ => repeat_offsets.first.wrapping_sub(1),
+    };
+    if repeat_index != 1 {
+        repeat_offsets.third = repeat_offsets.second;
+    }
+    repeat_offsets.second = repeat_offsets.first;
+    repeat_offsets.first = offset;
+    offset
+}
+
 #[allow(clippy::missing_safety_doc)]
+#[inline(always)]
 unsafe fn decode_one_sequence_unchecked(
     stream: &mut SequenceStreamState,
     tables: &FastSequenceTables,
@@ -78,31 +106,46 @@ unsafe fn decode_one_sequence_unchecked(
         return Err(DecodeError::CorruptBitstream);
     }
 
-    let offset_entry = unsafe { table_entry_unchecked(&tables.offset, stream.offset_state) };
-    if offset_entry.extra_bits > 31 {
-        return Err(DecodeError::BadOffset);
-    }
-    let offset_extra = stream.reader.read(offset_entry.extra_bits as u32) as u32;
-    let offset_value = offset_entry.base_value + offset_extra;
-
+    let literal_length_entry =
+        unsafe { table_entry_unchecked(&tables.literal_length, stream.literal_length_state) };
     let match_entry =
         unsafe { table_entry_unchecked(&tables.match_length, stream.match_length_state) };
-    let match_extra = stream.reader.read(match_entry.extra_bits as u32) as u32;
-    let match_length = match_entry.base_value + match_extra;
+    let offset_entry = unsafe { table_entry_unchecked(&tables.offset, stream.offset_state) };
+    let offset_code = offset_entry.extra_bits as u32;
+    debug_assert!(offset_code <= 31);
 
-    if unsafe { stream.reader.refill_unchecked() } == ReloadStatus::Overflow {
+    let offset = if offset_code > 1 {
+        let offset = offset_entry.base_value + stream.reader.read(offset_code) as u32 - 3;
+        repeat_offsets.third = repeat_offsets.second;
+        repeat_offsets.second = repeat_offsets.first;
+        repeat_offsets.first = offset;
+        offset
+    } else {
+        let offset = unsafe {
+            read_repeat_offset_unchecked(
+                stream,
+                offset_code,
+                literal_length_entry.base_value == 0,
+                repeat_offsets,
+            )
+        };
+        if offset == 0 {
+            return Err(DecodeError::BadOffset);
+        }
+        offset
+    };
+
+    let match_length =
+        match_entry.base_value + stream.reader.read(match_entry.extra_bits as u32) as u32;
+
+    if offset_code + match_entry.extra_bits as u32 + literal_length_entry.extra_bits as u32 > 30
+        && unsafe { stream.reader.refill_unchecked() } == ReloadStatus::Overflow
+    {
         return Err(DecodeError::CorruptBitstream);
     }
 
-    let literal_length_entry =
-        unsafe { table_entry_unchecked(&tables.literal_length, stream.literal_length_state) };
-    let literal_extra = stream.reader.read(literal_length_entry.extra_bits as u32) as u32;
-    let literal_length = literal_length_entry.base_value + literal_extra;
-
-    let offset = repeat_offsets.get_offset(offset_value, literal_length);
-    if offset == 0 {
-        return Err(DecodeError::BadOffset);
-    }
+    let literal_length = literal_length_entry.base_value
+        + stream.reader.read(literal_length_entry.extra_bits as u32) as u32;
 
     if stream.sequences_left > 1 {
         stream.literal_length_state = literal_length_entry.next_state_base as usize
@@ -133,7 +176,11 @@ unsafe fn copy_literals_unchecked(
     output_cursor: *mut u8,
 ) {
     unsafe {
-        copy_bytes_overshoot_unchecked(literals.add(literal_cursor), output_cursor, length);
+        let source = literals.add(literal_cursor);
+        copy_bytes_overshoot_unchecked(source, output_cursor, 16);
+        if length > 16 {
+            copy_bytes_overshoot_unchecked(source.add(16), output_cursor.add(16), length - 16);
+        }
     }
 }
 
@@ -152,143 +199,6 @@ unsafe fn copy_match_unchecked(
             copy_bytes_overshoot_unchecked(source_pointer, destination_pointer, 16);
         }
         written += 16;
-    }
-}
-
-const SEQUENCE_LOOKAHEAD: usize = 4;
-
-#[inline(always)]
-fn prefetch_read(pointer: *const u8) {
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        core::arch::x86_64::_mm_prefetch(pointer as *const i8, core::arch::x86_64::_MM_HINT_T0);
-    }
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        core::arch::asm!(
-            "prfm pldl1keep, [{0}]",
-            in(reg) pointer,
-            options(nostack, preserves_flags, readonly),
-        );
-    }
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    {
-        let _ = pointer;
-    }
-}
-
-#[derive(Clone, Copy, Default)]
-struct PlannedSequence {
-    literal_source_cursor: usize,
-    literal_length: usize,
-    destination_position: usize,
-    match_source_start: usize,
-    match_destination: usize,
-    match_length: usize,
-    offset: usize,
-}
-
-#[allow(clippy::too_many_arguments)]
-unsafe fn plan_sequence_unchecked(
-    stream: &mut SequenceStreamState,
-    tables: &FastSequenceTables,
-    repeat_offsets: &mut RepeatOffsets,
-    literal_cursor: &mut usize,
-    literal_count: usize,
-    position: &mut usize,
-    block_start: usize,
-    block_end: usize,
-) -> Result<PlannedSequence, DecodeError> {
-    let sequence = unsafe { decode_one_sequence_unchecked(stream, tables, repeat_offsets)? };
-
-    let literal_length = sequence.literal_length as usize;
-    let match_length = sequence.match_length as usize;
-    let offset = sequence.offset as usize;
-
-    let new_literal_cursor = literal_cursor
-        .checked_add(literal_length)
-        .ok_or(DecodeError::CorruptBitstream)?;
-    if new_literal_cursor > literal_count {
-        return Err(DecodeError::CorruptBitstream);
-    }
-
-    let after_position = position
-        .checked_add(literal_length)
-        .and_then(|value| value.checked_add(match_length))
-        .ok_or(DecodeError::BlockTooLarge)?;
-    if after_position - block_start > MAX_BLOCK_SIZE {
-        return Err(DecodeError::BlockTooLarge);
-    }
-    if after_position > block_end {
-        return Err(DecodeError::OutputTooSmall);
-    }
-
-    let literal_source_cursor = *literal_cursor;
-    let destination_position = *position;
-    *literal_cursor = new_literal_cursor;
-
-    let position_after_literals = destination_position + literal_length;
-
-    if offset == 0 || offset > position_after_literals {
-        return Err(DecodeError::BadOffset);
-    }
-    let match_source_start = position_after_literals - offset;
-
-    *position = after_position;
-
-    Ok(PlannedSequence {
-        literal_source_cursor,
-        literal_length,
-        destination_position,
-        match_source_start,
-        match_destination: position_after_literals,
-        match_length,
-        offset,
-    })
-}
-
-unsafe fn execute_planned_sequence_unchecked(
-    output_base: *mut u8,
-    literals: *const u8,
-    plan: &PlannedSequence,
-) {
-    if plan.literal_length > 0 {
-        unsafe {
-            copy_literals_unchecked(
-                literals,
-                plan.literal_source_cursor,
-                plan.literal_length,
-                output_base.add(plan.destination_position),
-            );
-        }
-    }
-
-    if plan.match_length > 0 {
-        if plan.offset >= 16 {
-            unsafe {
-                copy_match_unchecked(
-                    output_base,
-                    plan.match_source_start,
-                    plan.match_destination,
-                    plan.match_length,
-                );
-            }
-        } else {
-            let mut pattern_bytes = [0u8; 16];
-            unsafe {
-                let source = output_base.add(plan.match_source_start);
-                let mut index = 0usize;
-                while index < plan.offset {
-                    pattern_bytes[index] = *source.add(index);
-                    index += 1;
-                }
-                let destination = core::slice::from_raw_parts_mut(
-                    output_base.add(plan.match_destination),
-                    plan.match_length,
-                );
-                fill_pattern(&pattern_bytes[..plan.offset], destination);
-            }
-        }
     }
 }
 
@@ -394,33 +304,19 @@ pub(crate) unsafe fn decode_sequences_unchecked(
     let mut literal_cursor = 0usize;
 
     while !stream.is_finished() {
-        let mut batch = [PlannedSequence::default(); SEQUENCE_LOOKAHEAD];
-        let mut batch_length = 0usize;
-
-        while batch_length < SEQUENCE_LOOKAHEAD && !stream.is_finished() {
-            let plan = unsafe {
-                plan_sequence_unchecked(
-                    &mut stream,
-                    tables,
-                    repeat_offsets,
-                    &mut literal_cursor,
-                    literal_count,
-                    &mut position,
-                    output_position,
-                    output_end,
-                )?
-            };
-            if plan.match_length > 0 {
-                prefetch_read(unsafe { output_base.add(plan.match_source_start) });
-            }
-            batch[batch_length] = plan;
-            batch_length += 1;
-        }
-
-        for plan in &batch[..batch_length] {
-            unsafe {
-                execute_planned_sequence_unchecked(output_base, literals, plan);
-            }
+        let sequence =
+            unsafe { decode_one_sequence_unchecked(&mut stream, tables, repeat_offsets)? };
+        unsafe {
+            execute_sequence_unchecked(
+                output_base,
+                &mut position,
+                literals,
+                &mut literal_cursor,
+                literal_count,
+                &sequence,
+                output_position,
+                output_end,
+            )?;
         }
     }
 
@@ -486,19 +382,16 @@ unsafe fn decode_sequences_two_streams_unchecked(
 
     loop {
         let take_from_second = read_from_second_next && second_stream.sequences_left > 0;
-        let take_from_first = !take_from_second && first_stream.sequences_left > 0;
-
-        let sequence = if take_from_first {
+        let stream = if !take_from_second && first_stream.sequences_left > 0 {
             read_from_second_next = true;
-            unsafe { decode_one_sequence_unchecked(&mut first_stream, tables, repeat_offsets)? }
-        } else if take_from_second {
-            read_from_second_next = false;
-            unsafe { decode_one_sequence_unchecked(&mut second_stream, tables, repeat_offsets)? }
+            &mut first_stream
         } else if second_stream.sequences_left > 0 {
-            unsafe { decode_one_sequence_unchecked(&mut second_stream, tables, repeat_offsets)? }
+            read_from_second_next = false;
+            &mut second_stream
         } else {
             break;
         };
+        let sequence = unsafe { decode_one_sequence_unchecked(stream, tables, repeat_offsets)? };
 
         unsafe {
             execute_sequence_unchecked(
@@ -583,7 +476,7 @@ pub(crate) unsafe fn decode_sequences_fast_path_unchecked(
     bitstream: &[u8],
     tables: &FastSequenceTables,
     sequence_count: usize,
-    literals: &[u8],
+    literals: *const u8,
     literal_count: usize,
     output: &mut [u8],
     output_position: usize,
@@ -591,12 +484,11 @@ pub(crate) unsafe fn decode_sequences_fast_path_unchecked(
     repeat_offsets: &mut RepeatOffsets,
 ) -> Result<usize, DecodeError> {
     debug_assert!(sequence_count > 0);
-    debug_assert!(literal_count <= literals.len());
     debug_assert!(output.len() >= output_position + MAX_BLOCK_SIZE + 32);
 
     let output_end = output.len();
     let output_base = output.as_mut_ptr();
-    let literals_pointer = literals.as_ptr();
+    let literals_pointer = literals;
 
     if format == FrameFormat::Osmos && sequence_count >= 2 {
         let (first_input, second_input, first_count, second_count) =
