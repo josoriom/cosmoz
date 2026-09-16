@@ -77,6 +77,49 @@ pub fn build_huffman_encode_table(
     Ok(())
 }
 
+const SORT_RANK_COUNT: usize = 65;
+
+fn sort_used_symbols_by_count(used_symbols: &mut [(u64, u8); 256], used_symbol_count: usize) {
+    let mut rank_of_symbol = [0u8; 256];
+    let mut bucket_sizes = [0usize; SORT_RANK_COUNT];
+    for index in 0..used_symbol_count {
+        let count = used_symbols[index].0;
+        let rank = (u64::BITS - count.leading_zeros()) as usize;
+        rank_of_symbol[index] = rank as u8;
+        bucket_sizes[rank] += 1;
+    }
+
+    let mut bucket_start = [0usize; SORT_RANK_COUNT + 1];
+    for rank in 0..SORT_RANK_COUNT {
+        bucket_start[rank + 1] = bucket_start[rank] + bucket_sizes[rank];
+    }
+
+    let mut cursor = bucket_start;
+    let mut sorted: [(u64, u8); 256] = [(0, 0); 256];
+    for index in 0..used_symbol_count {
+        let rank = rank_of_symbol[index] as usize;
+        sorted[cursor[rank]] = used_symbols[index];
+        cursor[rank] += 1;
+    }
+
+    for rank in 0..SORT_RANK_COUNT {
+        let bucket = &mut sorted[bucket_start[rank]..bucket_start[rank + 1]];
+        insertion_sort(bucket);
+    }
+
+    used_symbols[..used_symbol_count].copy_from_slice(&sorted[..used_symbol_count]);
+}
+
+fn insertion_sort(items: &mut [(u64, u8)]) {
+    for unsorted_start in 1..items.len() {
+        let mut position = unsorted_start;
+        while position > 0 && items[position - 1] > items[position] {
+            items.swap(position - 1, position);
+            position -= 1;
+        }
+    }
+}
+
 fn build_code_lengths(counts: &[u32; 256], lengths: &mut [u8; 256]) -> u8 {
     for length in lengths.iter_mut() {
         *length = 0;
@@ -90,7 +133,7 @@ fn build_code_lengths(counts: &[u32; 256], lengths: &mut [u8; 256]) -> u8 {
             used_symbol_count += 1;
         }
     }
-    used_symbols[..used_symbol_count].sort_unstable();
+    sort_used_symbols_by_count(&mut used_symbols, used_symbol_count);
 
     let mut level_markers = [[NO_LEAF; MAX_PACKAGE_MERGE_ITEMS]; MAX_HUFFMAN_BITS];
     let mut level_sizes = [0usize; MAX_HUFFMAN_BITS];

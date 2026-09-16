@@ -7,8 +7,6 @@ use crate::{
     error::DecodeError,
 };
 
-const FAST_PATH_SLACK: usize = 32;
-
 pub fn decode_one_stream(
     input: &[u8],
     table: &HuffmanDecodeTable,
@@ -102,55 +100,54 @@ pub fn decode_many_streams_with_slack(
         segment_lengths[stream_index] = segment_length;
     }
 
-    let has_fast_path_slack = output.len() >= regenerated_size + FAST_PATH_SLACK;
     let streams_are_well_formed = stream_slices[..stream_count]
         .iter()
         .all(|stream| !stream.is_empty());
+    if !streams_are_well_formed {
+        return Err(DecodeError::InputTooShort);
+    }
 
-    if has_fast_path_slack && streams_are_well_formed {
-        let output_pointer = output.as_mut_ptr();
-        if stream_count == 4 {
-            let streams = [
-                stream_slices[0],
-                stream_slices[1],
-                stream_slices[2],
-                stream_slices[3],
-            ];
-            let segments = [
-                segment_lengths[0],
-                segment_lengths[1],
-                segment_lengths[2],
-                segment_lengths[3],
-            ];
-            unsafe { decode_four_streams_unchecked(streams, table, output_pointer, segments) }
-        } else {
-            let streams = [
-                stream_slices[0],
-                stream_slices[1],
-                stream_slices[2],
-                stream_slices[3],
-                stream_slices[4],
-                stream_slices[5],
-                stream_slices[6],
-                stream_slices[7],
-            ];
-            let segments = [
-                segment_lengths[0],
-                segment_lengths[1],
-                segment_lengths[2],
-                segment_lengths[3],
-                segment_lengths[4],
-                segment_lengths[5],
-                segment_lengths[6],
-                segment_lengths[7],
-            ];
-            unsafe { decode_eight_streams_unchecked(streams, table, output_pointer, segments) }
-        }
+    let output_pointer = output.as_mut_ptr();
+    if stream_count == 4 {
+        let streams = [
+            stream_slices[0],
+            stream_slices[1],
+            stream_slices[2],
+            stream_slices[3],
+        ];
+        let segments = [
+            segment_lengths[0],
+            segment_lengths[1],
+            segment_lengths[2],
+            segment_lengths[3],
+        ];
+        unsafe { decode_four_streams_unchecked(streams, table, output_pointer, segments) }
     } else {
-        decode_many_streams_checked(output, table, stream_count, stream_slices, segment_lengths)
+        let streams = [
+            stream_slices[0],
+            stream_slices[1],
+            stream_slices[2],
+            stream_slices[3],
+            stream_slices[4],
+            stream_slices[5],
+            stream_slices[6],
+            stream_slices[7],
+        ];
+        let segments = [
+            segment_lengths[0],
+            segment_lengths[1],
+            segment_lengths[2],
+            segment_lengths[3],
+            segment_lengths[4],
+            segment_lengths[5],
+            segment_lengths[6],
+            segment_lengths[7],
+        ];
+        unsafe { decode_eight_streams_unchecked(streams, table, output_pointer, segments) }
     }
 }
 
+#[cfg(test)]
 fn decode_many_streams_checked(
     output: &mut [u8],
     table: &HuffmanDecodeTable,
@@ -271,6 +268,7 @@ fn decode_symbol_pair(
     (first_entry.symbol, second_entry.symbol)
 }
 
+#[cfg(test)]
 #[allow(clippy::needless_range_loop)]
 fn decode_four_streams_interleaved(
     readers: &mut [BackwardBitReader<'_>; 4],
@@ -316,6 +314,7 @@ fn decode_four_streams_interleaved(
     }
 }
 
+#[cfg(test)]
 #[allow(clippy::needless_range_loop)]
 fn decode_eight_streams_interleaved(
     readers: &mut [BackwardBitReader<'_>; 8],
@@ -545,5 +544,136 @@ mod tests {
             decode_four_streams(&truncated_input, &table, &mut output),
             Err(DecodeError::CorruptBitstream)
         );
+    }
+
+    fn split_streams(
+        input: &[u8],
+        stream_count: usize,
+        regenerated_size: usize,
+    ) -> ([&[u8]; 8], [usize; 8]) {
+        let jump_table_size = (stream_count - 1) * 2;
+        let mut stream_slices: [&[u8]; 8] = [&[]; 8];
+        let mut segment_lengths: [usize; 8] = [0; 8];
+        let segment_size = regenerated_size.div_ceil(stream_count);
+        let mut remaining_input = &input[jump_table_size..];
+        let mut remaining_output = regenerated_size;
+        for stream_index in 0..stream_count {
+            let is_last = stream_index == stream_count - 1;
+            let stream = if is_last {
+                remaining_input
+            } else {
+                let stream_size = read_little_endian_u16(input, stream_index * 2).unwrap() as usize;
+                let stream = &remaining_input[..stream_size];
+                remaining_input = &remaining_input[stream_size..];
+                stream
+            };
+            let segment_length = if is_last {
+                remaining_output
+            } else {
+                segment_size
+            };
+            remaining_output -= segment_length;
+            stream_slices[stream_index] = stream;
+            segment_lengths[stream_index] = segment_length;
+        }
+        (stream_slices, segment_lengths)
+    }
+
+    struct XorshiftRandom {
+        state: u64,
+    }
+
+    impl XorshiftRandom {
+        fn new(seed: u64) -> Self {
+            Self { state: seed | 1 }
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            let mut value = self.state;
+            value ^= value << 13;
+            value ^= value >> 7;
+            value ^= value << 17;
+            self.state = value;
+            value
+        }
+
+        fn next_range(&mut self, bound: usize) -> usize {
+            (self.next_u64() % bound as u64) as usize
+        }
+    }
+
+    #[test]
+    fn checked_interleaved_oracle_matches_the_fast_path() {
+        use crate::entropy::{
+            huffman_encode::encode_many_streams,
+            huffman_encode_table::{HuffmanEncodeTable, build_huffman_encode_table},
+        };
+
+        let mut random = XorshiftRandom::new(0x2545_F491_4F6C_DD1D);
+
+        for case_index in 0..300 {
+            let stream_count = if case_index % 2 == 0 { 4 } else { 8 };
+            let symbol_count = 2 + random.next_range(40);
+            let mut counts = [0u32; 256];
+            for _ in 0..4000 {
+                counts[random.next_range(symbol_count)] += 1;
+            }
+            let mut encode_table = HuffmanEncodeTable::new();
+            if build_huffman_encode_table(&counts, &mut encode_table).is_err() {
+                continue;
+            }
+
+            let usable_symbols: Vec<u8> = (0..=255u8)
+                .filter(|&symbol| encode_table.codes[symbol as usize].bit_count > 0)
+                .collect();
+            let length = stream_count * (4 + random.next_range(500));
+            let text: Vec<u8> = (0..length)
+                .map(|_| usable_symbols[random.next_range(usable_symbols.len())])
+                .collect();
+
+            let mut weights_output = [0u8; 256];
+            let bytes_written = match crate::entropy::huffman_encode_table::write_direct_weights(
+                &mut weights_output,
+                &encode_table,
+            ) {
+                Ok(bytes_written) => bytes_written,
+                Err(_) => continue,
+            };
+            let mut decode_table = HuffmanDecodeTable::new();
+            let mut weight_fse_table = crate::entropy::fse_decode_table::FseDecodeTable::new();
+            if crate::entropy::huffman_decode_table::read_huffman_table(
+                &weights_output[..bytes_written],
+                &mut decode_table,
+                &mut weight_fse_table,
+            )
+            .is_err()
+            {
+                continue;
+            }
+
+            let mut encoded = vec![0u8; length * 2 + 4096];
+            let bytes_written =
+                match encode_many_streams(&text, &encode_table, stream_count, &mut encoded) {
+                    Ok(bytes_written) => bytes_written,
+                    Err(_) => continue,
+                };
+            let encoded = &encoded[..bytes_written];
+
+            let mut fast_output = vec![0u8; length];
+            decode_many_streams(encoded, &decode_table, stream_count, &mut fast_output).unwrap();
+
+            let (stream_slices, segment_lengths) = split_streams(encoded, stream_count, length);
+            let mut checked_output = vec![0u8; length];
+            decode_many_streams_checked(
+                &mut checked_output,
+                &decode_table,
+                stream_count,
+                stream_slices,
+                segment_lengths,
+            )
+            .unwrap();
+
+            assert_eq!(fast_output, checked_output, "case {case_index}");
+        }
     }
 }

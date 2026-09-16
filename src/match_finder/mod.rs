@@ -1,16 +1,24 @@
+#[cfg(feature = "levels")]
 pub mod double_fast_finder;
 pub mod finder_tables;
+#[cfg(feature = "levels")]
 pub mod hash_chain_finder;
 pub mod hash_table_finder;
 pub mod level_table;
+#[cfg(feature = "levels")]
 pub mod row_hash_finder;
 
 use crate::block::{repeat_offsets::RepeatOffsets, sequence_record::SequenceRecord};
+#[cfg(feature = "levels")]
 use double_fast_finder::DoubleFastFinder;
 use finder_tables::TableStorage;
+#[cfg(feature = "levels")]
 use hash_chain_finder::{HashChainFinder, SearchMethod};
 use hash_table_finder::HashTableFinder;
-use level_table::{LevelParameters, Strategy};
+use level_table::LevelParameters;
+#[cfg(feature = "levels")]
+use level_table::Strategy;
+#[cfg(feature = "levels")]
 use row_hash_finder::RowHashFinder;
 
 pub const MIN_MATCH: usize = 4;
@@ -31,9 +39,14 @@ pub trait MatchFinder {
 #[allow(clippy::large_enum_variant)]
 pub enum AnyFinder<'tables> {
     Fast(HashTableFinder),
+    #[cfg(feature = "levels")]
     DoubleFast(DoubleFastFinder<'tables>),
+    #[cfg(feature = "levels")]
     Chain(HashChainFinder<'tables>),
+    #[cfg(feature = "levels")]
     Row(RowHashFinder<'tables>),
+    #[cfg(not(feature = "levels"))]
+    Unused(core::marker::PhantomData<&'tables ()>),
 }
 
 impl AnyFinder<'static> {
@@ -42,6 +55,7 @@ impl AnyFinder<'static> {
     }
 }
 
+#[cfg(feature = "levels")]
 fn search_method_for_strategy(strategy: Strategy) -> SearchMethod {
     match strategy {
         Strategy::Lazy => SearchMethod::Lazy,
@@ -51,6 +65,7 @@ fn search_method_for_strategy(strategy: Strategy) -> SearchMethod {
 }
 
 impl<'tables> AnyFinder<'tables> {
+    #[cfg(feature = "levels")]
     pub fn for_level_with_storage(
         level_parameters: LevelParameters,
         storage: TableStorage<'tables>,
@@ -74,6 +89,15 @@ impl<'tables> AnyFinder<'tables> {
         }
     }
 
+    #[cfg(not(feature = "levels"))]
+    pub fn for_level_with_storage(
+        level_parameters: LevelParameters,
+        _storage: TableStorage<'tables>,
+    ) -> Self {
+        AnyFinder::Fast(HashTableFinder::new(level_parameters.window_log))
+    }
+
+    #[cfg(feature = "levels")]
     pub fn for_level_with_storage_at(
         level: u8,
         level_parameters: LevelParameters,
@@ -95,15 +119,29 @@ impl<'tables> AnyFinder<'tables> {
         }
         Self::for_level_with_storage(level_parameters, storage)
     }
+
+    #[cfg(not(feature = "levels"))]
+    pub fn for_level_with_storage_at(
+        _level: u8,
+        level_parameters: LevelParameters,
+        storage: TableStorage<'tables>,
+    ) -> Self {
+        Self::for_level_with_storage(level_parameters, storage)
+    }
 }
 
 impl MatchFinder for AnyFinder<'_> {
     fn reset(&mut self) {
         match self {
             AnyFinder::Fast(finder) => finder.reset(),
+            #[cfg(feature = "levels")]
             AnyFinder::DoubleFast(finder) => finder.reset(),
+            #[cfg(feature = "levels")]
             AnyFinder::Chain(finder) => finder.reset(),
+            #[cfg(feature = "levels")]
             AnyFinder::Row(finder) => finder.reset(),
+            #[cfg(not(feature = "levels"))]
+            AnyFinder::Unused(_) => {}
         }
     }
 
@@ -118,24 +156,34 @@ impl MatchFinder for AnyFinder<'_> {
             AnyFinder::Fast(finder) => {
                 finder.find_sequences(input, block_start, sequences, repeat_offsets)
             }
+            #[cfg(feature = "levels")]
             AnyFinder::DoubleFast(finder) => {
                 finder.find_sequences(input, block_start, sequences, repeat_offsets)
             }
+            #[cfg(feature = "levels")]
             AnyFinder::Chain(finder) => {
                 finder.find_sequences(input, block_start, sequences, repeat_offsets)
             }
+            #[cfg(feature = "levels")]
             AnyFinder::Row(finder) => {
                 finder.find_sequences(input, block_start, sequences, repeat_offsets)
             }
+            #[cfg(not(feature = "levels"))]
+            AnyFinder::Unused(_) => (0, 0),
         }
     }
 
     fn window_log(&self) -> u8 {
         match self {
             AnyFinder::Fast(finder) => finder.window_log(),
+            #[cfg(feature = "levels")]
             AnyFinder::DoubleFast(finder) => finder.window_log(),
+            #[cfg(feature = "levels")]
             AnyFinder::Chain(finder) => finder.window_log(),
+            #[cfg(feature = "levels")]
             AnyFinder::Row(finder) => finder.window_log(),
+            #[cfg(not(feature = "levels"))]
+            AnyFinder::Unused(_) => 0,
         }
     }
 }

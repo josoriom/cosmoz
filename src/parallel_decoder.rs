@@ -71,7 +71,7 @@ pub fn decode_chunks_in_parallel(
                         .take()
                         .expect("chunk output slot already taken");
 
-                    workspace.block.reset_history(FrameFormat::Osmo);
+                    workspace.block.reset_history(FrameFormat::Osmos);
                     let result =
                         decode_block_sequence(chunk_input, chunk_output, &mut workspace.block)
                             .and_then(|(bytes_consumed, bytes_written)| {

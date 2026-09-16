@@ -1,19 +1,25 @@
 use core::cell::UnsafeCell;
 
+#[cfg(feature = "encoder")]
+use crate::block::repeat_offsets::RepeatOffsets;
+#[cfg(feature = "checksum")]
+use crate::hash::xxhash3;
 use crate::{
-    block::repeat_offsets::RepeatOffsets,
     decoder::{DecodeWorkspace, decode_block_sequence, decompress, get_decompressed_size},
+    error::DecodeError,
+    frame::{
+        chunk_index::ChunkIndex,
+        frame_header::{FrameFormat, read_frame_header},
+    },
+};
+#[cfg(feature = "encoder")]
+use crate::{
     encode_error::EncodeError,
     encoder::{
         CompressOptions, EncodeWorkspace, compress, compress_chunk, get_max_compressed_size,
     },
-    error::DecodeError,
-    frame::{
-        chunk_index::{ChunkEntry, ChunkIndex},
-        frame_header::{FrameFormat, read_frame_header},
-        frame_writer::{write_checksum, write_chunk_index, write_frame_header},
-    },
-    hash::xxhash3,
+    frame::chunk_index::ChunkEntry,
+    frame::frame_writer::{write_checksum, write_chunk_index, write_frame_header},
     match_finder::MatchFinder,
 };
 
@@ -37,8 +43,11 @@ const HEAP_SIZE: usize = 16 * 1024 * 1024;
 const HEAP_ALIGNMENT: usize = 8;
 
 static WORKSPACE: SingleThreadCell<DecodeWorkspace> = SingleThreadCell::new(DecodeWorkspace::new());
+#[cfg(feature = "encoder")]
 static ENCODE_WORKSPACE: SingleThreadCell<EncodeWorkspace> =
-    SingleThreadCell::new(EncodeWorkspace::new());
+    SingleThreadCell::new(EncodeWorkspace::zeroed());
+#[cfg(feature = "encoder")]
+static ENCODE_WORKSPACE_READY: SingleThreadCell<bool> = SingleThreadCell::new(false);
 static HEAP: SingleThreadCell<[u8; HEAP_SIZE]> = SingleThreadCell::new([0u8; HEAP_SIZE]);
 static HEAP_USED: SingleThreadCell<usize> = SingleThreadCell::new(0);
 
@@ -46,8 +55,15 @@ fn get_workspace() -> &'static mut DecodeWorkspace {
     unsafe { &mut *WORKSPACE.0.get() }
 }
 
+#[cfg(feature = "encoder")]
 fn get_encode_workspace() -> &'static mut EncodeWorkspace {
-    unsafe { &mut *ENCODE_WORKSPACE.0.get() }
+    let ready = unsafe { &mut *ENCODE_WORKSPACE_READY.0.get() };
+    let workspace = unsafe { &mut *ENCODE_WORKSPACE.0.get() };
+    if !*ready {
+        workspace.write_initial_values_unchecked();
+        *ready = true;
+    }
+    workspace
 }
 
 fn get_heap() -> &'static mut [u8; HEAP_SIZE] {
@@ -63,7 +79,7 @@ fn align_up(value: usize, alignment: usize) -> usize {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn osmo_allocate(length: usize) -> *mut u8 {
+pub extern "C" fn osmos_allocate(length: usize) -> *mut u8 {
     let heap_used = get_heap_used();
     let aligned_start = align_up(*heap_used, HEAP_ALIGNMENT);
     let end = match aligned_start.checked_add(length) {
@@ -79,7 +95,7 @@ pub extern "C" fn osmo_allocate(length: usize) -> *mut u8 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn osmo_free(pointer: *mut u8, length: usize) {
+pub extern "C" fn osmos_free(pointer: *mut u8, length: usize) {
     let heap_used = get_heap_used();
     let base = get_heap().as_mut_ptr() as usize;
     let block_start = pointer as usize;
@@ -93,7 +109,7 @@ pub extern "C" fn osmo_free(pointer: *mut u8, length: usize) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn osmo_reset_heap() {
+pub extern "C" fn osmos_reset_heap() {
     let heap_used = get_heap_used();
     *heap_used = 0;
 }
@@ -123,7 +139,7 @@ unsafe fn slice_from_raw_parts_mut_checked<'a>(
 
 #[unsafe(no_mangle)]
 #[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn osmo_get_decompressed_size(
+pub unsafe extern "C" fn osmos_get_decompressed_size(
     input_pointer: *const u8,
     input_length: usize,
 ) -> i64 {
@@ -148,7 +164,7 @@ fn decode_error_to_decompress_error_code(error: DecodeError) -> i64 {
 
 #[unsafe(no_mangle)]
 #[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn osmo_decompress(
+pub unsafe extern "C" fn osmos_decompress(
     input_pointer: *const u8,
     input_length: usize,
     output_pointer: *mut u8,
@@ -169,20 +185,23 @@ pub unsafe extern "C" fn osmo_decompress(
     }
 }
 
+#[cfg(feature = "encoder")]
 fn frame_format_from_u32(format: u32) -> Option<FrameFormat> {
     match format {
         0 => Some(FrameFormat::Zstd),
-        1 => Some(FrameFormat::Osmo),
+        1 => Some(FrameFormat::Osmos),
         _ => None,
     }
 }
 
+#[cfg(feature = "encoder")]
 fn encode_error_to_error_code(error: EncodeError) -> i64 {
     -(1 + error as i64)
 }
 
+#[cfg(feature = "encoder")]
 #[unsafe(no_mangle)]
-pub extern "C" fn osmo_get_max_compressed_size(input_length: usize, format: u32) -> i64 {
+pub extern "C" fn osmos_get_max_compressed_size(input_length: usize, format: u32) -> i64 {
     let frame_format = match frame_format_from_u32(format) {
         Some(frame_format) => frame_format,
         None => return encode_error_to_error_code(EncodeError::BadOptions),
@@ -196,9 +215,10 @@ pub extern "C" fn osmo_get_max_compressed_size(input_length: usize, format: u32)
     get_max_compressed_size(input_length, &options) as i64
 }
 
+#[cfg(feature = "encoder")]
 #[unsafe(no_mangle)]
 #[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn osmo_compress(
+pub unsafe extern "C" fn osmos_compress(
     input_pointer: *const u8,
     input_length: usize,
     output_pointer: *mut u8,
@@ -231,30 +251,37 @@ pub unsafe extern "C" fn osmo_compress(
     }
 }
 
+#[cfg(feature = "encoder")]
 const WASM_WINDOW_LOG: u8 = 20;
+#[cfg(feature = "encoder")]
 const MAX_WASM_CHUNK_INDEX_ENTRIES: usize = 4096;
 
 #[unsafe(no_mangle)]
-pub extern "C" fn osmo_run_self_tests() -> i64 {
-    let kernels: [fn() -> Option<u32>; 6] = [
-        crate::simd::copy_bytes::run_self_tests,
-        crate::simd::count_matching_bytes::run_self_tests,
-        crate::simd::hash_positions::run_self_tests,
-        crate::simd::histogram::run_self_tests,
-        crate::simd::row_tag_match::run_self_tests,
-        crate::simd::xxhash3_stripes::run_self_tests,
-    ];
-    for (kernel_index, kernel) in kernels.into_iter().enumerate() {
-        if let Some(test_number) = kernel() {
-            return 1000 * kernel_index as i64 + test_number as i64;
-        }
+#[allow(unused_assignments)]
+pub extern "C" fn osmos_run_self_tests() -> i64 {
+    let mut kernel_index: i64 = 0;
+    macro_rules! run_kernel {
+        ($kernel:expr) => {{
+            if let Some(test_number) = $kernel() {
+                return 1000 * kernel_index + test_number as i64;
+            }
+            kernel_index += 1;
+        }};
     }
+    run_kernel!(crate::simd::copy_bytes::run_self_tests);
+    #[cfg(feature = "encoder")]
+    run_kernel!(crate::simd::count_matching_bytes::run_self_tests);
+    #[cfg(feature = "encoder")]
+    run_kernel!(crate::simd::histogram::run_self_tests);
+    run_kernel!(crate::simd::row_tag_match::run_self_tests);
+    #[cfg(feature = "checksum")]
+    run_kernel!(crate::simd::xxhash3_stripes::run_self_tests);
     0
 }
 
-fn read_osmo_chunk_index(frame: &[u8]) -> Result<ChunkIndex<'_>, DecodeError> {
+fn read_osmos_chunk_index(frame: &[u8]) -> Result<ChunkIndex<'_>, DecodeError> {
     let header = read_frame_header(frame)?;
-    if header.format != FrameFormat::Osmo {
+    if header.format != FrameFormat::Osmos {
         return Err(DecodeError::BadFrameHeader);
     }
     let index_input = frame
@@ -265,7 +292,7 @@ fn read_osmo_chunk_index(frame: &[u8]) -> Result<ChunkIndex<'_>, DecodeError> {
 
 #[unsafe(no_mangle)]
 #[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn osmo_read_chunk_count(
+pub unsafe extern "C" fn osmos_read_chunk_count(
     frame_pointer: *const u8,
     frame_length: usize,
 ) -> i64 {
@@ -273,7 +300,7 @@ pub unsafe extern "C" fn osmo_read_chunk_count(
         Some(frame) => frame,
         None => return decode_error_to_decompress_error_code(DecodeError::InputTooShort),
     };
-    match read_osmo_chunk_index(frame) {
+    match read_osmos_chunk_index(frame) {
         Ok(index) => index.chunk_count as i64,
         Err(error) => decode_error_to_decompress_error_code(error),
     }
@@ -281,7 +308,7 @@ pub unsafe extern "C" fn osmo_read_chunk_count(
 
 #[unsafe(no_mangle)]
 #[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn osmo_read_chunk_entry(
+pub unsafe extern "C" fn osmos_read_chunk_entry(
     frame_pointer: *const u8,
     frame_length: usize,
     chunk_number: usize,
@@ -295,7 +322,7 @@ pub unsafe extern "C" fn osmo_read_chunk_entry(
         Ok(header) => header,
         Err(error) => return decode_error_to_decompress_error_code(error),
     };
-    let index = match read_osmo_chunk_index(frame) {
+    let index = match read_osmos_chunk_index(frame) {
         Ok(index) => index,
         Err(error) => return decode_error_to_decompress_error_code(error),
     };
@@ -327,7 +354,7 @@ pub unsafe extern "C" fn osmo_read_chunk_entry(
 
 #[unsafe(no_mangle)]
 #[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn osmo_decompress_chunk(
+pub unsafe extern "C" fn osmos_decompress_chunk(
     chunk_pointer: *const u8,
     chunk_length: usize,
     output_pointer: *mut u8,
@@ -342,7 +369,7 @@ pub unsafe extern "C" fn osmo_decompress_chunk(
         None => return decode_error_to_decompress_error_code(DecodeError::OutputTooSmall),
     };
     let workspace = get_workspace();
-    workspace.block.reset_history(FrameFormat::Osmo);
+    workspace.block.reset_history(FrameFormat::Osmos);
     match decode_block_sequence(chunk_input, output, &mut workspace.block) {
         Ok((bytes_consumed, bytes_written)) => {
             if bytes_consumed != chunk_input.len() {
@@ -354,9 +381,10 @@ pub unsafe extern "C" fn osmo_decompress_chunk(
     }
 }
 
+#[cfg(feature = "encoder")]
 #[unsafe(no_mangle)]
 #[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn osmo_compress_chunk(
+pub unsafe extern "C" fn osmos_compress_chunk(
     input_pointer: *const u8,
     input_length: usize,
     output_pointer: *mut u8,
@@ -373,15 +401,16 @@ pub unsafe extern "C" fn osmo_compress_chunk(
     let workspace = get_encode_workspace();
     workspace.match_finder.reset();
     workspace.repeat_offsets = RepeatOffsets::new();
-    match compress_chunk(input, FrameFormat::Osmo, output, workspace) {
+    match compress_chunk(input, FrameFormat::Osmos, output, workspace) {
         Ok(bytes_written) => bytes_written as i64,
         Err(error) => encode_error_to_error_code(error),
     }
 }
 
+#[cfg(feature = "encoder")]
 #[unsafe(no_mangle)]
 #[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn osmo_write_frame_header(
+pub unsafe extern "C" fn osmos_write_frame_header(
     output_pointer: *mut u8,
     output_length: usize,
     content_size_low: u32,
@@ -395,7 +424,7 @@ pub unsafe extern "C" fn osmo_write_frame_header(
     let content_size = ((content_size_high as u64) << 32) | content_size_low as u64;
     match write_frame_header(
         output,
-        FrameFormat::Osmo,
+        FrameFormat::Osmos,
         content_size,
         WASM_WINDOW_LOG,
         with_checksum != 0,
@@ -405,9 +434,10 @@ pub unsafe extern "C" fn osmo_write_frame_header(
     }
 }
 
+#[cfg(feature = "encoder")]
 #[unsafe(no_mangle)]
 #[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn osmo_write_chunk_index(
+pub unsafe extern "C" fn osmos_write_chunk_index(
     output_pointer: *mut u8,
     output_length: usize,
     entries_pointer: *const u32,
@@ -447,9 +477,10 @@ pub unsafe extern "C" fn osmo_write_chunk_index(
     }
 }
 
+#[cfg(feature = "encoder")]
 #[unsafe(no_mangle)]
 #[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn osmo_write_checksum(
+pub unsafe extern "C" fn osmos_write_checksum(
     output_pointer: *mut u8,
     output_length: usize,
     hash_low: u32,
@@ -460,15 +491,16 @@ pub unsafe extern "C" fn osmo_write_checksum(
         None => return encode_error_to_error_code(EncodeError::OutputTooSmall),
     };
     let hash = ((hash_high as u64) << 32) | hash_low as u64;
-    match write_checksum(output, FrameFormat::Osmo, hash) {
+    match write_checksum(output, FrameFormat::Osmos, hash) {
         Ok(bytes_written) => bytes_written as i64,
         Err(error) => encode_error_to_error_code(error),
     }
 }
 
+#[cfg(feature = "checksum")]
 #[unsafe(no_mangle)]
 #[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn osmo_xxhash3(pointer: *const u8, length: usize) -> u64 {
+pub unsafe extern "C" fn osmos_xxhash3(pointer: *const u8, length: usize) -> u64 {
     let input = match unsafe { slice_from_raw_parts_checked(pointer, length) } {
         Some(input) => input,
         None => return 0,

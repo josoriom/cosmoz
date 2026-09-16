@@ -19,7 +19,10 @@ pub struct LevelParameters {
 }
 
 pub const MIN_LEVEL: u8 = 1;
+#[cfg(feature = "levels")]
 pub const MAX_LEVEL: u8 = 12;
+#[cfg(not(feature = "levels"))]
+pub const MAX_LEVEL: u8 = 1;
 
 pub const fn level_one_parameters() -> LevelParameters {
     LevelParameters {
@@ -36,6 +39,7 @@ pub const fn level_one_parameters() -> LevelParameters {
 pub const fn get_level_parameters(level: u8) -> Option<LevelParameters> {
     match level {
         1 => Some(level_one_parameters()),
+        #[cfg(feature = "levels")]
         2 => Some(LevelParameters {
             window_log: 20,
             chain_log: 15,
@@ -45,6 +49,7 @@ pub const fn get_level_parameters(level: u8) -> Option<LevelParameters> {
             target_length: 0,
             strategy: Strategy::Fast,
         }),
+        #[cfg(feature = "levels")]
         3 => Some(LevelParameters {
             window_log: 21,
             chain_log: 16,
@@ -54,6 +59,7 @@ pub const fn get_level_parameters(level: u8) -> Option<LevelParameters> {
             target_length: 0,
             strategy: Strategy::DoubleFast,
         }),
+        #[cfg(feature = "levels")]
         4 => Some(LevelParameters {
             window_log: 21,
             chain_log: 18,
@@ -63,6 +69,7 @@ pub const fn get_level_parameters(level: u8) -> Option<LevelParameters> {
             target_length: 0,
             strategy: Strategy::DoubleFast,
         }),
+        #[cfg(feature = "levels")]
         5 => Some(LevelParameters {
             window_log: 21,
             chain_log: 18,
@@ -72,6 +79,7 @@ pub const fn get_level_parameters(level: u8) -> Option<LevelParameters> {
             target_length: 2,
             strategy: Strategy::Greedy,
         }),
+        #[cfg(feature = "levels")]
         6 => Some(LevelParameters {
             window_log: 21,
             chain_log: 18,
@@ -81,6 +89,7 @@ pub const fn get_level_parameters(level: u8) -> Option<LevelParameters> {
             target_length: 4,
             strategy: Strategy::Lazy,
         }),
+        #[cfg(feature = "levels")]
         7 => Some(LevelParameters {
             window_log: 21,
             chain_log: 19,
@@ -90,6 +99,7 @@ pub const fn get_level_parameters(level: u8) -> Option<LevelParameters> {
             target_length: 8,
             strategy: Strategy::Lazy,
         }),
+        #[cfg(feature = "levels")]
         8 => Some(LevelParameters {
             window_log: 21,
             chain_log: 19,
@@ -99,6 +109,7 @@ pub const fn get_level_parameters(level: u8) -> Option<LevelParameters> {
             target_length: 16,
             strategy: Strategy::Lazy2,
         }),
+        #[cfg(feature = "levels")]
         9 => Some(LevelParameters {
             window_log: 22,
             chain_log: 20,
@@ -108,6 +119,7 @@ pub const fn get_level_parameters(level: u8) -> Option<LevelParameters> {
             target_length: 16,
             strategy: Strategy::Lazy2,
         }),
+        #[cfg(feature = "levels")]
         10 => Some(LevelParameters {
             window_log: 22,
             chain_log: 21,
@@ -117,6 +129,7 @@ pub const fn get_level_parameters(level: u8) -> Option<LevelParameters> {
             target_length: 16,
             strategy: Strategy::Lazy2,
         }),
+        #[cfg(feature = "levels")]
         11 => Some(LevelParameters {
             window_log: 22,
             chain_log: 21,
@@ -126,6 +139,7 @@ pub const fn get_level_parameters(level: u8) -> Option<LevelParameters> {
             target_length: 16,
             strategy: Strategy::Lazy2,
         }),
+        #[cfg(feature = "levels")]
         12 => Some(LevelParameters {
             window_log: 22,
             chain_log: 22,

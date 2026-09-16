@@ -139,7 +139,7 @@ pub fn write_sequences(
         .get_mut(header_length..)
         .ok_or(EncodeError::OutputTooSmall)?;
 
-    let body_length = if format == FrameFormat::Osmo && sequence_count >= 2 {
+    let body_length = if format == FrameFormat::Osmos && sequence_count >= 2 {
         write_two_streams(sequences, tables, body_output, scratch)?
     } else {
         write_one_stream(sequences, tables, body_output)?
@@ -591,7 +591,7 @@ mod tests {
     }
 
     #[test]
-    fn round_trips_as_two_osmo_streams() {
+    fn round_trips_as_two_osmos_streams() {
         let records = build_test_records();
         let expected = resolve_offset_values(&records);
 
@@ -601,7 +601,7 @@ mod tests {
 
         let written = write_sequences(
             &records,
-            FrameFormat::Osmo,
+            FrameFormat::Osmos,
             &mut output,
             &mut tables,
             &mut scratch,
@@ -635,14 +635,14 @@ mod tests {
             &output[bitstream_start..written],
             header.sequence_count,
             &decode_tables,
-            FrameFormat::Osmo,
+            FrameFormat::Osmos,
         );
 
         assert_eq!(decoded, expected);
     }
 
     #[test]
-    fn osmo_with_one_sequence_has_no_length_field() {
+    fn osmos_with_one_sequence_has_no_length_field() {
         let records = vec![SequenceRecord {
             literal_length: 5,
             match_length: 10,
@@ -656,7 +656,7 @@ mod tests {
 
         let written = write_sequences(
             &records,
-            FrameFormat::Osmo,
+            FrameFormat::Osmos,
             &mut output,
             &mut tables,
             &mut scratch,
@@ -679,7 +679,7 @@ mod tests {
             &output[bitstream_start..written],
             header.sequence_count,
             &decode_tables,
-            FrameFormat::Osmo,
+            FrameFormat::Osmos,
         );
 
         assert_eq!(decoded, expected);

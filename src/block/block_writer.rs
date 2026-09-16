@@ -1,8 +1,10 @@
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", feature = "levels"))]
 use alloc::vec::Vec;
 
-#[cfg(feature = "alloc")]
-use crate::{block::block_splitter, frame::block_header::BLOCK_HEADER_LENGTH};
+#[cfg(all(feature = "alloc", feature = "levels"))]
+use crate::block::block_splitter;
+#[cfg(all(feature = "alloc", feature = "levels"))]
+use crate::frame::block_header::BLOCK_HEADER_LENGTH;
 use crate::{
     block::{
         literals_writer::write_literals,
@@ -16,7 +18,7 @@ use crate::{
     match_finder::MatchFinder,
 };
 
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", feature = "levels"))]
 const MIN_LEVEL_FOR_BLOCK_SPLITTING: u8 = 6;
 
 pub fn write_block(
@@ -65,7 +67,7 @@ pub fn write_block(
 
     let table_reuse_allowed = block_start != 0;
 
-    #[cfg(feature = "alloc")]
+    #[cfg(all(feature = "alloc", feature = "levels"))]
     if workspace.level >= MIN_LEVEL_FOR_BLOCK_SPLITTING {
         let split_points = block_splitter::split_block(
             &workspace.sequences[..sequence_count],
@@ -193,7 +195,7 @@ fn commit_single_block(
     }
 }
 
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", feature = "levels"))]
 #[allow(clippy::too_many_arguments)]
 fn write_block_as_split_pieces(
     block_content: &[u8],
@@ -205,7 +207,10 @@ fn write_block_as_split_pieces(
     literal_count: usize,
     table_reuse_allowed: bool,
 ) -> Result<Option<usize>, EncodeError> {
-    let sequence_count = *boundaries.last().expect("boundaries must not be empty");
+    let sequence_count = match boundaries.last() {
+        Some(sequence_count) => *sequence_count,
+        None => return Err(EncodeError::TableNotUsable),
+    };
 
     let mut literal_prefix = alloc::vec![0u32; sequence_count + 1];
     let mut byte_prefix = alloc::vec![0u32; sequence_count + 1];
@@ -449,14 +454,14 @@ behind the distant hills and the wind carries the scent of rain across the quiet
         let written = write_block(
             &input,
             0,
-            FrameFormat::Osmo,
+            FrameFormat::Osmos,
             true,
             &mut output,
             &mut workspace,
         )
         .unwrap();
         assert!(written < input.len());
-        let decoded = decode_one_block(&output[..written], input.len(), FrameFormat::Osmo);
+        let decoded = decode_one_block(&output[..written], input.len(), FrameFormat::Osmos);
         assert_eq!(decoded, input);
     }
 
@@ -498,13 +503,13 @@ behind the distant hills and the wind carries the scent of rain across the quiet
         let written = write_block(
             &input,
             0,
-            FrameFormat::Osmo,
+            FrameFormat::Osmos,
             true,
             &mut output,
             &mut workspace,
         )
         .unwrap();
-        let decoded = decode_one_block(&output[..written], input.len(), FrameFormat::Osmo);
+        let decoded = decode_one_block(&output[..written], input.len(), FrameFormat::Osmos);
         assert_eq!(decoded, input);
     }
 }

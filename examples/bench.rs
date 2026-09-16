@@ -1,6 +1,6 @@
-use osmo::decoder::{DecodeWorkspace, decompress};
-use osmo::encoder::{CompressOptions, EncodeWorkspace, compress, get_max_compressed_size};
-use osmo::frame::frame_header::FrameFormat;
+use osmos::decoder::{DecodeWorkspace, decompress};
+use osmos::encoder::{CompressOptions, EncodeWorkspace, compress, get_max_compressed_size};
+use osmos::frame::frame_header::FrameFormat;
 use std::env;
 use std::fs;
 use std::time::Instant;
@@ -48,7 +48,7 @@ fn bench_format(
     let options = CompressOptions {
         format,
         with_checksum: true,
-        chunk_size: osmo::encoder::DEFAULT_CHUNK_SIZE,
+        chunk_size: osmos::encoder::DEFAULT_CHUNK_SIZE,
         level,
     };
 
@@ -136,10 +136,15 @@ fn main() {
     );
 
     let zstd_format_result =
-        bench_format("osmo zstd format", FrameFormat::Zstd, level, runs, &input);
+        bench_format("osmos zstd format", FrameFormat::Zstd, level, runs, &input);
     print_row(&zstd_format_result, runs);
 
-    let osmo_format_result =
-        bench_format("osmo osmo format", FrameFormat::Osmo, level, runs, &input);
-    print_row(&osmo_format_result, runs);
+    let osmos_format_result = bench_format(
+        "osmos osmos format",
+        FrameFormat::Osmos,
+        level,
+        runs,
+        &input,
+    );
+    print_row(&osmos_format_result, runs);
 }

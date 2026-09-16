@@ -1,9 +1,13 @@
 pub mod fse_decode_table;
+#[cfg(feature = "encoder")]
 pub mod fse_encode_table;
 pub mod fse_predefined;
+#[cfg(feature = "encoder")]
 pub mod histogram;
 pub mod huffman_decode;
 pub(crate) mod huffman_decode_fast;
 pub mod huffman_decode_table;
+#[cfg(feature = "encoder")]
 pub mod huffman_encode;
+#[cfg(feature = "encoder")]
 pub mod huffman_encode_table;

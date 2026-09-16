@@ -2,6 +2,8 @@
 use crate::block::sequences::TableMode;
 #[cfg(feature = "parallel")]
 use crate::frame::chunk_index::ChunkEntry;
+#[cfg(not(feature = "alloc"))]
+use crate::match_finder::hash_table_finder::{HASH_TABLE_SIZE, HashTableFinder};
 use crate::{
     block::{
         block_writer::write_block,
@@ -14,14 +16,18 @@ use crate::{
     frame::{
         block_header::{BLOCK_HEADER_LENGTH, MAX_BLOCK_SIZE},
         chunk_index::{CHUNK_COUNT_LENGTH, CHUNK_ENTRY_LENGTH},
-        frame_header::{FrameFormat, OSMO_CHECKSUM_LENGTH, ZSTD_CHECKSUM_LENGTH},
-        frame_writer::{MAX_FRAME_HEADER_LENGTH, write_checksum, write_frame_header},
+        frame_header::{FrameFormat, OSMOS_CHECKSUM_LENGTH, ZSTD_CHECKSUM_LENGTH},
+        frame_writer::{MAX_FRAME_HEADER_LENGTH, write_frame_header},
     },
-    hash::{xxhash3, xxhash64},
     match_finder::{
         AnyFinder, MAX_OFFSET_LOG, MatchFinder,
         level_table::{self, LevelParameters},
     },
+};
+#[cfg(feature = "checksum")]
+use crate::{
+    frame::frame_writer::write_checksum,
+    hash::{xxhash3, xxhash64},
 };
 
 pub const MAX_CHUNK_SIZE: usize = 4 * 1024 * 1024;
@@ -30,7 +36,7 @@ pub const DEFAULT_CHUNK_SIZE: usize = MAX_CHUNK_SIZE;
 fn window_log_for_frame(format: FrameFormat, level_parameters: LevelParameters) -> u8 {
     match format {
         FrameFormat::Zstd => level_parameters.window_log,
-        FrameFormat::Osmo => level_parameters.window_log.min(MAX_OFFSET_LOG),
+        FrameFormat::Osmos => level_parameters.window_log.min(MAX_OFFSET_LOG),
     }
 }
 
@@ -52,9 +58,9 @@ impl CompressOptions {
         }
     }
 
-    pub const fn osmo() -> Self {
+    pub const fn osmos() -> Self {
         Self {
-            format: FrameFormat::Osmo,
+            format: FrameFormat::Osmos,
             with_checksum: true,
             chunk_size: DEFAULT_CHUNK_SIZE,
             level: 1,
@@ -102,6 +108,50 @@ impl EncodeWorkspace {
             weight_fse_table: FseEncodeTable::new(),
             sequence_tables: SequenceEncodeTables::new(),
         }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) const fn zeroed() -> Self {
+        Self {
+            level: 0,
+            level_parameters: LevelParameters {
+                window_log: 0,
+                chain_log: 0,
+                hash_log: 0,
+                search_log: 0,
+                min_match: 0,
+                target_length: 0,
+                strategy: level_table::Strategy::Fast,
+            },
+            match_finder: AnyFinder::Fast(HashTableFinder {
+                positions: [0; HASH_TABLE_SIZE],
+                window_log: 0,
+            }),
+            repeat_offsets: RepeatOffsets {
+                first: 0,
+                second: 0,
+                third: 0,
+            },
+            sequences: [SequenceRecord {
+                literal_length: 0,
+                match_length: 0,
+                offset_value: 0,
+            }; MAX_SEQUENCES_PER_BLOCK],
+            literals: [0u8; MAX_BLOCK_SIZE],
+            block_scratch: [0u8; MAX_BLOCK_SIZE + 1024],
+            entropy_scratch: [0u8; MAX_BLOCK_SIZE + 1024],
+            huffman_table: HuffmanEncodeTable::new(),
+            weight_fse_table: FseEncodeTable::new(),
+            sequence_tables: SequenceEncodeTables::new(),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn write_initial_values_unchecked(&mut self) {
+        self.level = level_table::MIN_LEVEL;
+        self.level_parameters = level_table::level_one_parameters();
+        self.match_finder = AnyFinder::for_level(self.level_parameters);
+        self.repeat_offsets = RepeatOffsets::new();
     }
 }
 
@@ -170,7 +220,7 @@ fn build_boxed_workspace(
 }
 
 #[cfg(feature = "alloc")]
-unsafe fn write_initial_values_unchecked(
+pub(crate) unsafe fn write_initial_values_unchecked(
     target: *mut EncodeWorkspace,
     level: u8,
     level_parameters: LevelParameters,
@@ -330,7 +380,7 @@ fn window_size_for_log(window_log: u8) -> usize {
     }
 }
 
-fn plan_osmo_chunking(input_length: usize, chunk_size: usize, window_log: u8) -> (usize, usize) {
+fn plan_osmos_chunking(input_length: usize, chunk_size: usize, window_log: u8) -> (usize, usize) {
     let configured_chunk_size = clamp_chunk_size(chunk_size);
     if input_length == 0 {
         return (configured_chunk_size, 1);
@@ -348,12 +398,11 @@ pub fn get_max_compressed_size(input_length: usize, options: &CompressOptions) -
     let checksum_size = if options.with_checksum {
         match options.format {
             FrameFormat::Zstd => ZSTD_CHECKSUM_LENGTH,
-            FrameFormat::Osmo => OSMO_CHECKSUM_LENGTH,
+            FrameFormat::Osmos => OSMOS_CHECKSUM_LENGTH,
         }
     } else {
         0
     };
-    
 
     match options.format {
         FrameFormat::Zstd => {
@@ -365,7 +414,7 @@ pub fn get_max_compressed_size(input_length: usize, options: &CompressOptions) -
             let blocks_size = input_length + block_count * BLOCK_HEADER_LENGTH;
             MAX_FRAME_HEADER_LENGTH + blocks_size + checksum_size
         }
-        FrameFormat::Osmo => {
+        FrameFormat::Osmos => {
             let chunk_size = clamp_chunk_size(options.chunk_size);
             let chunk_count = if input_length == 0 {
                 1
@@ -392,10 +441,14 @@ pub fn compress(
     if options.level != workspace.level {
         return Err(EncodeError::BadOptions);
     }
+    #[cfg(not(feature = "checksum"))]
+    if options.with_checksum {
+        return Err(EncodeError::BadOptions);
+    }
 
     match options.format {
         FrameFormat::Zstd => compress_zstd_frame(input, output, options, workspace),
-        FrameFormat::Osmo => compress_osmo_frame(input, output, options, workspace),
+        FrameFormat::Osmos => compress_osmos_frame(input, output, options, workspace),
     }
 }
 
@@ -422,6 +475,7 @@ fn compress_zstd_frame(
         .ok_or(EncodeError::OutputTooSmall)?;
     position += compress_chunk(input, FrameFormat::Zstd, blocks_output, workspace)?;
 
+    #[cfg(feature = "checksum")]
     if options.with_checksum {
         let hash = xxhash64::hash_bytes(input, 0);
         let checksum_output = output
@@ -433,18 +487,19 @@ fn compress_zstd_frame(
     Ok(position)
 }
 
-fn compress_osmo_frame(
+fn compress_osmos_frame(
     input: &[u8],
     output: &mut [u8],
     options: &CompressOptions,
     workspace: &mut EncodeWorkspace,
 ) -> Result<usize, EncodeError> {
-    let window_log = window_log_for_frame(FrameFormat::Osmo, workspace.level_parameters);
-    let (chunk_size, chunk_count) = plan_osmo_chunking(input.len(), options.chunk_size, window_log);
+    let window_log = window_log_for_frame(FrameFormat::Osmos, workspace.level_parameters);
+    let (chunk_size, chunk_count) =
+        plan_osmos_chunking(input.len(), options.chunk_size, window_log);
 
     let header_length = write_frame_header(
         output,
-        FrameFormat::Osmo,
+        FrameFormat::Osmos,
         input.len() as u64,
         window_log,
         options.with_checksum,
@@ -522,7 +577,7 @@ fn compress_osmo_frame(
                 .get_mut(position..)
                 .ok_or(EncodeError::OutputTooSmall)?;
             let compressed_length =
-                compress_chunk(chunk_content, FrameFormat::Osmo, chunk_output, workspace)?;
+                compress_chunk(chunk_content, FrameFormat::Osmos, chunk_output, workspace)?;
 
             let compressed_length_u32 =
                 u32::try_from(compressed_length).map_err(|_| EncodeError::InputTooLarge)?;
@@ -541,12 +596,13 @@ fn compress_osmo_frame(
         }
     }
 
+    #[cfg(feature = "checksum")]
     if options.with_checksum {
         let hash = xxhash3::hash_bytes(input);
         let checksum_output = output
             .get_mut(position..)
             .ok_or(EncodeError::OutputTooSmall)?;
-        position += write_checksum(checksum_output, FrameFormat::Osmo, hash)?;
+        position += write_checksum(checksum_output, FrameFormat::Osmos, hash)?;
     }
 
     Ok(position)
@@ -596,21 +652,24 @@ mod tests {
     use crate::decoder::{DecodeWorkspace, decompress, get_decompressed_size};
 
     fn find_zstd_cli() -> Option<PathBuf> {
-        let output = Command::new("which").arg("zstd").output().ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let path_string = String::from_utf8(output.stdout).ok()?;
-        let trimmed_path = path_string.trim();
-        if trimmed_path.is_empty() {
-            None
+        let output = Command::new("zstd")
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .ok()?;
+        if output.success() {
+            Some(PathBuf::from("zstd"))
         } else {
-            Some(PathBuf::from(trimmed_path))
+            None
         }
     }
 
     fn decompress_with_cli(frame: &[u8]) -> Vec<u8> {
-        let zstd_path = find_zstd_cli().expect("zstd CLI not found on PATH");
+        let Some(zstd_path) = find_zstd_cli() else {
+            return Vec::new();
+        };
         let mut command = Command::new(zstd_path);
         command.arg("-d").arg("-c").arg("-q");
         command
@@ -672,9 +731,9 @@ mod tests {
     }
 
     #[test]
-    fn raw_osmo_frame_round_trips() {
+    fn raw_osmos_frame_round_trips() {
         let text = build_deterministic_text(2 * 1024 * 1024 + 512 * 1024);
-        let mut options = CompressOptions::osmo();
+        let mut options = CompressOptions::osmos();
         options.chunk_size = 1024 * 1024;
         let chunk_count = text.len().div_ceil(options.chunk_size);
         assert_eq!(chunk_count, 3);
@@ -717,14 +776,15 @@ mod tests {
             println!("zstd CLI not found on PATH, skipping CLI check");
         }
 
-        let osmo_options = CompressOptions::osmo();
-        let mut osmo_output = vec![0u8; get_max_compressed_size(0, &osmo_options)];
-        let osmo_written = compress(&[], &mut osmo_output, &osmo_options, &mut workspace).unwrap();
-        osmo_output.truncate(osmo_written);
+        let osmos_options = CompressOptions::osmos();
+        let mut osmos_output = vec![0u8; get_max_compressed_size(0, &osmos_options)];
+        let osmos_written =
+            compress(&[], &mut osmos_output, &osmos_options, &mut workspace).unwrap();
+        osmos_output.truncate(osmos_written);
 
-        let osmo_decoded_length =
-            decompress(&osmo_output, &mut decoded, &mut decode_workspace).unwrap();
-        assert_eq!(osmo_decoded_length, 0);
+        let osmos_decoded_length =
+            decompress(&osmos_output, &mut decoded, &mut decode_workspace).unwrap();
+        assert_eq!(osmos_decoded_length, 0);
     }
 
     #[test]
@@ -857,7 +917,7 @@ mod tests {
             let input = generate_incompressible_bytes(length, length as u64 + 1);
             for &chunk_size in &chunk_sizes {
                 let options = CompressOptions {
-                    format: FrameFormat::Osmo,
+                    format: FrameFormat::Osmos,
                     with_checksum: true,
                     chunk_size,
                     level: 1,
@@ -883,7 +943,7 @@ mod tests {
     #[test]
     fn merges_two_chunks_into_one_when_the_merged_chunk_fits_the_window() {
         let text = build_deterministic_text(6000);
-        let mut options = CompressOptions::osmo();
+        let mut options = CompressOptions::osmos();
         options.chunk_size = 4096;
         let split_chunk_count = text.len().div_ceil(options.chunk_size);
         assert_eq!(split_chunk_count, 2);
@@ -905,7 +965,7 @@ mod tests {
     #[test]
     fn keeps_the_split_when_the_merged_chunk_would_need_a_larger_window() {
         let text = build_deterministic_text(1_400_000);
-        let mut options = CompressOptions::osmo();
+        let mut options = CompressOptions::osmos();
         options.chunk_size = 700_000;
         options.level = 1;
         let split_chunk_count = text.len().div_ceil(options.chunk_size);
@@ -927,9 +987,9 @@ mod tests {
     }
 
     #[test]
-    fn single_chunk_osmo_frame_round_trips_through_the_parallel_decoder() {
+    fn single_chunk_osmos_frame_round_trips_through_the_parallel_decoder() {
         let text = build_deterministic_text(6000);
-        let mut options = CompressOptions::osmo();
+        let mut options = CompressOptions::osmos();
         options.chunk_size = 4096;
 
         let mut workspace = EncodeWorkspace::new_boxed();
@@ -948,7 +1008,7 @@ mod tests {
 
     #[test]
     #[ignore]
-    fn report_osmo_and_zstd_sizes_on_bench_files() {
+    fn report_osmos_and_zstd_sizes_on_bench_files() {
         let pwiz = std::fs::read(
             "/Users/josorio/github/phenological/ionic/crates/parser/data/mzml/small.pwiz.1.1.mzML",
         )
@@ -960,18 +1020,18 @@ mod tests {
 
         for level in [1u8, 6, 9, 12] {
             for (name, input) in [("pwiz", &pwiz), ("iron", &iron)] {
-                let mut osmo_options = CompressOptions::osmo();
-                osmo_options.level = level;
+                let mut osmos_options = CompressOptions::osmos();
+                osmos_options.level = level;
                 let mut zstd_options = CompressOptions::zstd();
                 zstd_options.level = level;
 
                 let mut workspace = EncodeWorkspace::new_boxed_for_level(level).unwrap();
 
-                let mut osmo_output =
-                    vec![0u8; get_max_compressed_size(input.len(), &osmo_options)];
-                let osmo_written =
-                    compress(input, &mut osmo_output, &osmo_options, &mut workspace).unwrap();
-                let osmo_chunk_count = read_chunk_count(&osmo_output[..osmo_written]);
+                let mut osmos_output =
+                    vec![0u8; get_max_compressed_size(input.len(), &osmos_options)];
+                let osmos_written =
+                    compress(input, &mut osmos_output, &osmos_options, &mut workspace).unwrap();
+                let osmos_chunk_count = read_chunk_count(&osmos_output[..osmos_written]);
 
                 let mut zstd_output =
                     vec![0u8; get_max_compressed_size(input.len(), &zstd_options)];
@@ -979,15 +1039,15 @@ mod tests {
                     compress(input, &mut zstd_output, &zstd_options, &mut workspace).unwrap();
 
                 println!(
-                    "{name} level {level}: osmo {osmo_written} bytes (chunk_count {osmo_chunk_count}), zstd {zstd_written} bytes"
+                    "{name} level {level}: osmos {osmos_written} bytes (chunk_count {osmos_chunk_count}), zstd {zstd_written} bytes"
                 );
             }
         }
     }
 
     #[test]
-    fn empty_input_osmo_chunk_count_is_still_one() {
-        let options = CompressOptions::osmo();
+    fn empty_input_osmos_chunk_count_is_still_one() {
+        let options = CompressOptions::osmos();
         let mut workspace = EncodeWorkspace::new_boxed();
         let mut output = vec![0u8; get_max_compressed_size(0, &options)];
         let written = compress(&[], &mut output, &options, &mut workspace).unwrap();

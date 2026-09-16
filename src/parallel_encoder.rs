@@ -73,7 +73,7 @@ pub fn compress_chunks_in_parallel(
                     let mut scratch = vec![0u8; max_chunk_compressed_size(chunk_content.len())];
                     let result = compress_chunk(
                         chunk_content,
-                        FrameFormat::Osmo,
+                        FrameFormat::Osmos,
                         &mut scratch,
                         &mut workspace,
                     );

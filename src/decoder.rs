@@ -1,5 +1,7 @@
 #[cfg(feature = "alloc")]
 use crate::block::repeat_offsets::RepeatOffsets;
+#[cfg(feature = "checksum")]
+use crate::hash::{xxhash3::XxHash3, xxhash64::XxHash64};
 use crate::{
     block::block_decoder::{BlockWorkspace, decode_block},
     error::DecodeError,
@@ -11,7 +13,6 @@ use crate::{
             read_frame_header,
         },
     },
-    hash::{xxhash3::XxHash3, xxhash64::XxHash64},
 };
 
 pub struct DecodeWorkspace {
@@ -123,24 +124,26 @@ mod new_boxed_tests {
     }
 }
 
+#[cfg(feature = "checksum")]
 #[allow(clippy::large_enum_variant)]
 enum ContentHasher {
     Zstd(XxHash64),
-    Osmo(XxHash3),
+    Osmos(XxHash3),
 }
 
+#[cfg(feature = "checksum")]
 impl ContentHasher {
     fn new(format: FrameFormat) -> Self {
         match format {
             FrameFormat::Zstd => ContentHasher::Zstd(XxHash64::new(0)),
-            FrameFormat::Osmo => ContentHasher::Osmo(XxHash3::new()),
+            FrameFormat::Osmos => ContentHasher::Osmos(XxHash3::new()),
         }
     }
 
     fn update(&mut self, input: &[u8]) {
         match self {
             ContentHasher::Zstd(hasher) => hasher.update(input),
-            ContentHasher::Osmo(hasher) => hasher.update(input),
+            ContentHasher::Osmos(hasher) => hasher.update(input),
         }
     }
 
@@ -150,7 +153,7 @@ impl ContentHasher {
                 let low_32_bits = (hasher.finish() & 0xFFFF_FFFF) as u32;
                 expected_bytes == low_32_bits.to_le_bytes()
             }
-            ContentHasher::Osmo(hasher) => expected_bytes == hasher.finish().to_le_bytes(),
+            ContentHasher::Osmos(hasher) => expected_bytes == hasher.finish().to_le_bytes(),
         }
     }
 }
@@ -196,7 +199,7 @@ pub(crate) fn decode_block_sequence(
 fn skip_frame_body(input: &[u8], header: &FrameHeader) -> Result<usize, DecodeError> {
     match header.format {
         FrameFormat::Zstd => skip_zstd_frame_body(input, header),
-        FrameFormat::Osmo => skip_osmo_frame_body(input, header),
+        FrameFormat::Osmos => skip_osmos_frame_body(input, header),
     }
 }
 
@@ -226,7 +229,7 @@ fn skip_zstd_frame_body(input: &[u8], header: &FrameHeader) -> Result<usize, Dec
     Ok(position)
 }
 
-fn skip_osmo_frame_body(input: &[u8], header: &FrameHeader) -> Result<usize, DecodeError> {
+fn skip_osmos_frame_body(input: &[u8], header: &FrameHeader) -> Result<usize, DecodeError> {
     let index_input = input
         .get(header.header_length..)
         .ok_or(DecodeError::InputTooShort)?;
@@ -319,7 +322,7 @@ fn decode_frame(
             frame_start_output_position,
             workspace,
         )?,
-        FrameFormat::Osmo => decode_osmo_frame_body(
+        FrameFormat::Osmos => decode_osmos_frame_body(
             input,
             &header,
             output,
@@ -328,17 +331,28 @@ fn decode_frame(
         )?,
     };
 
-    let mut hasher = ContentHasher::new(header.format);
-    hasher.update(&output[frame_start_output_position..position]);
+    #[cfg(feature = "checksum")]
+    {
+        let mut hasher = ContentHasher::new(header.format);
+        hasher.update(&output[frame_start_output_position..position]);
 
-    let checksum_length = header.checksum_length();
-    if header.has_checksum {
-        let expected_bytes = input
-            .get(input_position..input_position + checksum_length)
-            .ok_or(DecodeError::InputTooShort)?;
-        check_content_checksum(expected_bytes, &hasher)?;
+        let checksum_length = header.checksum_length();
+        if header.has_checksum {
+            let expected_bytes = input
+                .get(input_position..input_position + checksum_length)
+                .ok_or(DecodeError::InputTooShort)?;
+            check_content_checksum(expected_bytes, &hasher)?;
+        }
+        input_position += checksum_length;
     }
-    input_position += checksum_length;
+    #[cfg(not(feature = "checksum"))]
+    {
+        let checksum_length = header.checksum_length();
+        if input.len() < input_position + checksum_length {
+            return Err(DecodeError::InputTooShort);
+        }
+        input_position += checksum_length;
+    }
 
     if let Some(content_size) = header.content_size {
         let bytes_written = (position - frame_start_output_position) as u64;
@@ -372,7 +386,7 @@ fn decode_zstd_frame_body(
     ))
 }
 
-fn decode_osmo_frame_body(
+fn decode_osmos_frame_body(
     input: &[u8],
     header: &FrameHeader,
     output: &mut [u8],
@@ -411,12 +425,12 @@ fn decode_osmo_frame_body(
         .get_mut(frame_start_output_position..output_end)
         .ok_or(DecodeError::OutputTooSmall)?;
 
-    decode_osmo_chunks(chunks_input, &index, output_region, workspace)?;
+    decode_osmos_chunks(chunks_input, &index, output_region, workspace)?;
 
     Ok((chunks_input_end, output_end))
 }
 
-fn decode_osmo_chunks(
+fn decode_osmos_chunks(
     chunks_input: &[u8],
     index: &ChunkIndex,
     output: &mut [u8],
@@ -428,10 +442,10 @@ fn decode_osmo_chunks(
             return crate::parallel_decoder::decode_chunks_in_parallel(chunks_input, index, output);
         }
     }
-    decode_osmo_chunks_sequentially(chunks_input, index, output, &mut workspace.block)
+    decode_osmos_chunks_sequentially(chunks_input, index, output, &mut workspace.block)
 }
 
-fn decode_osmo_chunks_sequentially(
+fn decode_osmos_chunks_sequentially(
     chunks_input: &[u8],
     index: &ChunkIndex,
     output: &mut [u8],
@@ -449,7 +463,7 @@ fn decode_osmo_chunks_sequentially(
             .get_mut(output_offset..output_offset + entry.decompressed_length)
             .ok_or(DecodeError::OutputTooSmall)?;
 
-        block_workspace.reset_history(FrameFormat::Osmo);
+        block_workspace.reset_history(FrameFormat::Osmos);
         let (bytes_consumed, bytes_written) =
             decode_block_sequence(chunk_input, chunk_output, block_workspace)?;
         if bytes_consumed != chunk_input.len() || bytes_written != entry.decompressed_length {
@@ -463,6 +477,7 @@ fn decode_osmo_chunks_sequentially(
     Ok(())
 }
 
+#[cfg(feature = "checksum")]
 fn check_content_checksum(
     expected_bytes: &[u8],
     hasher: &ContentHasher,
@@ -599,7 +614,7 @@ mod tests {
         assert_eq!(&output[500..1000], text.as_slice());
     }
 
-    fn build_osmo_frame() -> Vec<u8> {
+    fn build_osmos_frame() -> Vec<u8> {
         let zstd_checksum_length = 4;
         let header = read_frame_header(&TEXT_500_WITH_CHECKSUM).unwrap();
         let header_length = header.header_length;
@@ -623,8 +638,8 @@ mod tests {
     }
 
     #[test]
-    fn decompresses_an_osmo_frame_with_checksum() {
-        let frame = build_osmo_frame();
+    fn decompresses_an_osmos_frame_with_checksum() {
+        let frame = build_osmos_frame();
         let mut workspace = DecodeWorkspace::new_boxed();
         let mut output = [0u8; 1024];
         let written = decompress(&frame, &mut output, &mut workspace).unwrap();
@@ -633,8 +648,8 @@ mod tests {
     }
 
     #[test]
-    fn rejects_flipped_osmo_checksum_byte() {
-        let mut frame = build_osmo_frame();
+    fn rejects_flipped_osmos_checksum_byte() {
+        let mut frame = build_osmos_frame();
         let last_index = frame.len() - 1;
         frame[last_index] ^= 0xFF;
         let mut workspace = DecodeWorkspace::new_boxed();
@@ -656,7 +671,7 @@ mod tests {
     }
 
     #[test]
-    fn decompresses_an_osmo_frame_with_empty_content() {
+    fn decompresses_an_osmos_frame_with_empty_content() {
         let mut frame = Vec::new();
         frame.extend_from_slice(&[0x4F, 0x53, 0x4D, 0x4F]);
         frame.push(0x24);

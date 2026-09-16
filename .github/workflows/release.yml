@@ -55,7 +55,7 @@ jobs:
       - name: Check the tag matches Cargo.toml
         shell: bash
         run: |
-          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "osmo") | .version')"
+          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
           if [ "$RELEASE_TAG" != "v$version" ]; then
             echo "tag $RELEASE_TAG does not match Cargo.toml version $version"
             exit 1

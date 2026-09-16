@@ -16,7 +16,8 @@ pub enum LiteralsType {
     Treeless,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
+#[cfg_attr(test, derive(Debug))]
 pub enum LiteralSource<'input, 'workspace> {
     Raw(&'input [u8]),
     Rle { byte: u8, count: usize },
@@ -192,7 +193,7 @@ fn resolve_stream_count(format: FrameFormat, header_stream_count: u8) -> usize {
     } else {
         match format {
             FrameFormat::Zstd => 4,
-            FrameFormat::Osmo => 8,
+            FrameFormat::Osmos => 8,
         }
     }
 }

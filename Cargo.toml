@@ -1,7 +1,13 @@
 [package]
-name = "osmo"
+name = "osmos"
 version = "0.1.1"
 edition = "2024"
+license = "MIT"
+description = "Pure Rust zstd compressor and decompressor, zero dependencies, no_std core, native and wasm"
+repository = "https://github.com/josoriom/osmos"
+readme = "README.md"
+keywords = ["zstd", "compression", "wasm"]
+categories = ["compression", "no-std", "wasm"]
 authors = [
     "Javier Osorio M <javier.osorio.mosquera@gmail.com>",
     "Jorge Osorio M <joheosmo@gmail.com>"
@@ -11,16 +17,19 @@ authors = [
 crate-type = ["rlib"]
 
 [features]
-default = []
+default = ["levels", "checksum", "encoder"]
 alloc = []
 std = ["alloc"]
 parallel = ["std"]
 wasm-exports = []
+levels = []
+checksum = []
+encoder = []
 
 [dependencies]
 
 [dev-dependencies]
-osmo = { path = ".", features = ["std"] }
+osmos = { path = ".", features = ["std"] }
 
 [profile.release]
 opt-level = 3

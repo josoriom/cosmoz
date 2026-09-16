@@ -543,12 +543,12 @@ unsafe fn decode_sequences_two_streams_unchecked(
     Ok(position)
 }
 
-type OsmoStreamSplit<'input> = (&'input [u8], &'input [u8], usize, usize);
+type OsmosStreamSplit<'input> = (&'input [u8], &'input [u8], usize, usize);
 
-fn split_osmo_streams(
+fn split_osmos_streams(
     input: &[u8],
     sequence_count: usize,
-) -> Result<OsmoStreamSplit<'_>, DecodeError> {
+) -> Result<OsmosStreamSplit<'_>, DecodeError> {
     let length_bytes = input.get(0..4).ok_or(DecodeError::BadSequencesHeader)?;
     let first_stream_length = u32::from_le_bytes([
         length_bytes[0],
@@ -598,9 +598,9 @@ pub(crate) unsafe fn decode_sequences_fast_path_unchecked(
     let output_base = output.as_mut_ptr();
     let literals_pointer = literals.as_ptr();
 
-    if format == FrameFormat::Osmo && sequence_count >= 2 {
+    if format == FrameFormat::Osmos && sequence_count >= 2 {
         let (first_input, second_input, first_count, second_count) =
-            split_osmo_streams(bitstream, sequence_count)?;
+            split_osmos_streams(bitstream, sequence_count)?;
         if first_input.is_empty() || second_input.is_empty() {
             return Err(DecodeError::BadSequencesHeader);
         }

@@ -23,7 +23,7 @@ pub struct HashTableFinder {
 impl HashTableFinder {
     pub const fn new(window_log: u8) -> Self {
         HashTableFinder {
-            positions: [u32::MAX; HASH_TABLE_SIZE],
+            positions: [0; HASH_TABLE_SIZE],
             window_log,
         }
     }
@@ -31,7 +31,7 @@ impl HashTableFinder {
 
 impl MatchFinder for HashTableFinder {
     fn reset(&mut self) {
-        self.positions = [u32::MAX; HASH_TABLE_SIZE];
+        self.positions.fill(0);
     }
 
     fn window_log(&self) -> u8 {
@@ -101,8 +101,8 @@ impl HashTableFinder {
             let candidate0 = self.positions[hash0];
             let candidate1 = self.positions[hash1];
 
-            self.positions[hash0] = position as u32;
-            self.positions[hash1] = next_position as u32;
+            self.positions[hash0] = position as u32 + 1;
+            self.positions[hash1] = next_position as u32 + 1;
 
             let repeat_offset = repeat_offsets.first as usize;
 
@@ -191,7 +191,7 @@ impl HashTableFinder {
                 break;
             }
             let hash = unsafe { hash_position_unchecked(input, position) };
-            self.positions[hash] = position as u32;
+            self.positions[hash] = position as u32 + 1;
             offset += 1;
         }
     }
@@ -216,12 +216,14 @@ unsafe fn candidate_match_unchecked(
         }
     }
 
-    if candidate != u32::MAX
-        && (candidate as usize) < position
-        && position - candidate as usize <= window_size
-        && low_four_bytes == unsafe { read_four_bytes_unchecked(input, candidate as usize) }
-    {
-        return Some((position, candidate as usize));
+    if candidate != 0 {
+        let candidate_position = (candidate - 1) as usize;
+        if candidate_position < position
+            && position - candidate_position <= window_size
+            && low_four_bytes == unsafe { read_four_bytes_unchecked(input, candidate_position) }
+        {
+            return Some((position, candidate_position));
+        }
     }
 
     None
