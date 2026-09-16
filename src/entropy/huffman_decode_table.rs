@@ -1,8 +1,8 @@
-use crate::bits::backward_bit_reader::BackwardBitReader;
-use crate::entropy::fse_decode_table::{
-    FseDecodeState, FseDecodeTable, read_fse_table_description,
+use crate::{
+    bits::backward_bit_reader::BackwardBitReader,
+    entropy::fse_decode_table::{FseDecodeState, FseDecodeTable, read_fse_table_description},
+    error::DecodeError,
 };
-use crate::error::DecodeError;
 
 pub const MAX_HUFFMAN_BITS: usize = 11;
 pub const MAX_HUFFMAN_TABLE_SIZE: usize = 1 << MAX_HUFFMAN_BITS;

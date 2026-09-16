@@ -1,11 +1,15 @@
-use crate::bits::backward_bit_writer::BackwardBitWriter;
-use crate::encode_error::EncodeError;
-use crate::entropy::fse_encode_table::{
-    FseEncodeState, FseEncodeTable, build_fse_encode_table, normalize_counts, pick_accuracy_log,
-    write_fse_table_description,
+use crate::{
+    bits::backward_bit_writer::BackwardBitWriter,
+    encode_error::EncodeError,
+    entropy::{
+        fse_encode_table::{
+            FseEncodeState, FseEncodeTable, build_fse_encode_table, normalize_counts,
+            pick_accuracy_log, write_fse_table_description,
+        },
+        histogram::{count_used_symbols, find_largest_symbol},
+        huffman_decode_table::{MAX_HUFFMAN_BITS, MAX_WEIGHT_ACCURACY_LOG},
+    },
 };
-use crate::entropy::histogram::{count_used_symbols, find_largest_symbol};
-use crate::entropy::huffman_decode_table::{MAX_HUFFMAN_BITS, MAX_WEIGHT_ACCURACY_LOG};
 
 const MAX_PACKAGE_MERGE_ITEMS: usize = 2 * 256 - 1;
 const NO_LEAF: u16 = u16::MAX;
@@ -330,8 +334,10 @@ fn write_interleaved_weight_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entropy::fse_decode_table::FseDecodeTable;
-    use crate::entropy::huffman_decode_table::{HuffmanDecodeTable, read_huffman_table};
+    use crate::entropy::{
+        fse_decode_table::FseDecodeTable,
+        huffman_decode_table::{HuffmanDecodeTable, read_huffman_table},
+    };
 
     const SAMPLE_TEXT: &[u8] = b"the quick brown fox jumps over the lazy dog while the sun sets \
 slowly behind the distant hills and the wind carries the scent of rain across the quiet valley";
@@ -370,8 +376,7 @@ slowly behind the distant hills and the wind carries the scent of rain across th
 
     #[test]
     fn package_merge_cost_equals_unlimited_huffman_when_depth_fits() {
-        use std::cmp::Reverse;
-        use std::collections::BinaryHeap;
+        use std::{cmp::Reverse, collections::BinaryHeap};
 
         let counts = counts_for(SAMPLE_TEXT);
 

@@ -1,18 +1,24 @@
-use crate::bits::backward_bit_reader::BackwardBitReader;
-use crate::block::repeat_offsets::RepeatOffsets;
-use crate::block::sequence_codes::{
-    get_literal_length_base, get_literal_length_extra_bits, get_match_length_base,
-    get_match_length_extra_bits,
+use crate::{
+    bits::backward_bit_reader::BackwardBitReader,
+    block::{
+        repeat_offsets::RepeatOffsets,
+        sequence_codes::{
+            get_literal_length_base, get_literal_length_extra_bits, get_match_length_base,
+            get_match_length_extra_bits,
+        },
+    },
+    entropy::{
+        fse_decode_table::{
+            FseDecodeState, FseDecodeTable, build_rle_table, read_fse_table_description,
+        },
+        fse_predefined::{
+            build_predefined_literal_length_table, build_predefined_match_length_table,
+            build_predefined_offset_table,
+        },
+    },
+    error::DecodeError,
+    frame::frame_header::FrameFormat,
 };
-use crate::entropy::fse_decode_table::{
-    FseDecodeState, FseDecodeTable, build_rle_table, read_fse_table_description,
-};
-use crate::entropy::fse_predefined::{
-    build_predefined_literal_length_table, build_predefined_match_length_table,
-    build_predefined_offset_table,
-};
-use crate::error::DecodeError;
-use crate::frame::frame_header::FrameFormat;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TableMode {

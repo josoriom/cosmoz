@@ -1,6 +1,8 @@
-use crate::bits::fast_bit_reader::{FastBitReader, ReloadStatus};
-use crate::entropy::huffman_decode_table::HuffmanDecodeTable;
-use crate::error::DecodeError;
+use crate::{
+    bits::fast_bit_reader::{FastBitReader, ReloadStatus},
+    entropy::huffman_decode_table::HuffmanDecodeTable,
+    error::DecodeError,
+};
 
 unsafe fn make_reader_unchecked(
     stream: &[u8],
@@ -190,11 +192,13 @@ pub(crate) unsafe fn decode_eight_streams_unchecked(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entropy::fse_decode_table::FseDecodeTable;
-    use crate::entropy::histogram::count_symbols;
-    use crate::entropy::huffman_decode::decode_many_streams;
-    use crate::entropy::huffman_encode::encode_many_streams;
-    use crate::entropy::huffman_encode_table::{HuffmanEncodeTable, build_huffman_encode_table};
+    use crate::entropy::{
+        fse_decode_table::FseDecodeTable,
+        histogram::count_symbols,
+        huffman_decode::decode_many_streams,
+        huffman_encode::encode_many_streams,
+        huffman_encode_table::{HuffmanEncodeTable, build_huffman_encode_table},
+    };
 
     struct XorshiftRandom {
         state: u64,

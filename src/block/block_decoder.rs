@@ -1,16 +1,21 @@
-use crate::block::block_decoder_fast::decode_sequences_fast_path_unchecked;
-use crate::block::literals::{LiteralSource, decode_literals};
-use crate::block::repeat_offsets::RepeatOffsets;
-use crate::block::sequence_tables_fast::FastSequenceTables;
-use crate::block::sequences::{
-    SequenceDecoder, SequenceTables, TableMode, read_sequence_tables, read_sequences_header,
+use crate::{
+    block::{
+        block_decoder_fast::decode_sequences_fast_path_unchecked,
+        literals::{LiteralSource, decode_literals},
+        repeat_offsets::RepeatOffsets,
+        sequence_tables_fast::FastSequenceTables,
+        sequences::{
+            SequenceDecoder, SequenceTables, TableMode, read_sequence_tables, read_sequences_header,
+        },
+    },
+    entropy::{fse_decode_table::FseDecodeTable, huffman_decode_table::HuffmanDecodeTable},
+    error::DecodeError,
+    frame::{
+        block_header::{BlockHeader, BlockType, MAX_BLOCK_SIZE},
+        frame_header::FrameFormat,
+    },
+    simd::copy_bytes::{copy_bytes, copy_bytes_overshoot_unchecked, fill_pattern},
 };
-use crate::entropy::fse_decode_table::FseDecodeTable;
-use crate::entropy::huffman_decode_table::HuffmanDecodeTable;
-use crate::error::DecodeError;
-use crate::frame::block_header::{BlockHeader, BlockType, MAX_BLOCK_SIZE};
-use crate::frame::frame_header::FrameFormat;
-use crate::simd::copy_bytes::{copy_bytes, copy_bytes_overshoot_unchecked, fill_pattern};
 
 const FAST_PATH_SLACK: usize = 32;
 const LITERALS_BUFFER_LENGTH: usize = MAX_BLOCK_SIZE + FAST_PATH_SLACK;
@@ -375,8 +380,7 @@ unsafe fn copy_match_unchecked(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frame::block_header::read_block_header;
-    use crate::frame::frame_header::read_frame_header;
+    use crate::frame::{block_header::read_block_header, frame_header::read_frame_header};
 
     #[test]
     fn copy_match_fast_path_matches_byte_by_byte_reference() {
@@ -591,8 +595,10 @@ The quick brown fox jumps over the lazy dog. "
     }
 
     fn round_trip_through_decode_block(input: &[u8]) -> std::vec::Vec<u8> {
-        use crate::decoder::{DecodeWorkspace, decompress};
-        use crate::encoder::{CompressOptions, EncodeWorkspace, compress, get_max_compressed_size};
+        use crate::{
+            decoder::{DecodeWorkspace, decompress},
+            encoder::{CompressOptions, EncodeWorkspace, compress, get_max_compressed_size},
+        };
 
         let options = CompressOptions::zstd();
         let mut encode_workspace = EncodeWorkspace::new_boxed();

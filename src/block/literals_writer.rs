@@ -1,12 +1,16 @@
-use crate::block::literals::LiteralsType;
-use crate::encode_error::EncodeError;
-use crate::entropy::fse_encode_table::FseEncodeTable;
-use crate::entropy::histogram::count_symbols;
-use crate::entropy::huffman_encode::{encode_many_streams, encode_one_stream};
-use crate::entropy::huffman_encode_table::{
-    HuffmanEncodeTable, build_huffman_encode_table, write_huffman_table,
+use crate::{
+    block::literals::LiteralsType,
+    encode_error::EncodeError,
+    entropy::{
+        fse_encode_table::FseEncodeTable,
+        histogram::count_symbols,
+        huffman_encode::{encode_many_streams, encode_one_stream},
+        huffman_encode_table::{
+            HuffmanEncodeTable, build_huffman_encode_table, write_huffman_table,
+        },
+    },
+    frame::frame_header::FrameFormat,
 };
-use crate::frame::frame_header::FrameFormat;
 
 pub const ONE_STREAM_MAX_SIZE: usize = 1023;
 pub const MULTI_STREAM_MIN_SIZE: usize = 256;
@@ -245,9 +249,10 @@ fn pick_size_format_from_regenerated_size(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::block::literals::{LiteralSource, decode_literals, read_literals_header};
-    use crate::entropy::fse_decode_table::FseDecodeTable;
-    use crate::entropy::huffman_decode_table::HuffmanDecodeTable;
+    use crate::{
+        block::literals::{LiteralSource, decode_literals, read_literals_header},
+        entropy::{fse_decode_table::FseDecodeTable, huffman_decode_table::HuffmanDecodeTable},
+    };
 
     struct XorshiftRandom {
         state: u64,

@@ -1,16 +1,21 @@
-use crate::block::repeat_offsets::RepeatOffsets;
-use crate::decoder::{DecodeWorkspace, decode_block_sequence, decompress, get_decompressed_size};
-use crate::encode_error::EncodeError;
-use crate::encoder::{
-    CompressOptions, EncodeWorkspace, compress, compress_chunk, get_max_compressed_size,
-};
-use crate::error::DecodeError;
-use crate::frame::chunk_index::{ChunkEntry, ChunkIndex};
-use crate::frame::frame_header::{FrameFormat, read_frame_header};
-use crate::frame::frame_writer::{write_checksum, write_chunk_index, write_frame_header};
-use crate::hash::xxhash3;
-use crate::match_finder::MatchFinder;
 use core::cell::UnsafeCell;
+
+use crate::{
+    block::repeat_offsets::RepeatOffsets,
+    decoder::{DecodeWorkspace, decode_block_sequence, decompress, get_decompressed_size},
+    encode_error::EncodeError,
+    encoder::{
+        CompressOptions, EncodeWorkspace, compress, compress_chunk, get_max_compressed_size,
+    },
+    error::DecodeError,
+    frame::{
+        chunk_index::{ChunkEntry, ChunkIndex},
+        frame_header::{FrameFormat, read_frame_header},
+        frame_writer::{write_checksum, write_chunk_index, write_frame_header},
+    },
+    hash::xxhash3,
+    match_finder::MatchFinder,
+};
 
 #[cfg(not(feature = "std"))]
 #[panic_handler]

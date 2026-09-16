@@ -1,15 +1,17 @@
-use crate::block::repeat_offsets::RepeatOffsets;
-use crate::encode_error::EncodeError;
-use crate::encoder::{EncodeWorkspace, compress_chunk};
-use crate::frame::block_header::{BLOCK_HEADER_LENGTH, MAX_BLOCK_SIZE};
-use crate::frame::chunk_index::ChunkEntry;
-use crate::frame::frame_header::FrameFormat;
-use crate::match_finder::MatchFinder;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
-use std::thread;
-use std::vec;
-use std::vec::Vec;
+use std::{sync::Mutex, thread, vec, vec::Vec};
+
+use crate::{
+    block::repeat_offsets::RepeatOffsets,
+    encode_error::EncodeError,
+    encoder::{EncodeWorkspace, compress_chunk},
+    frame::{
+        block_header::{BLOCK_HEADER_LENGTH, MAX_BLOCK_SIZE},
+        chunk_index::ChunkEntry,
+        frame_header::FrameFormat,
+    },
+    match_finder::MatchFinder,
+};
 
 fn max_chunk_compressed_size(chunk_length: usize) -> usize {
     let block_count = if chunk_length == 0 {

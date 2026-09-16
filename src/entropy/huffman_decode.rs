@@ -1,9 +1,11 @@
-use crate::bits::backward_bit_reader::BackwardBitReader;
-use crate::entropy::huffman_decode_fast::{
-    decode_eight_streams_unchecked, decode_four_streams_unchecked,
+use crate::{
+    bits::backward_bit_reader::BackwardBitReader,
+    entropy::{
+        huffman_decode_fast::{decode_eight_streams_unchecked, decode_four_streams_unchecked},
+        huffman_decode_table::{HuffmanDecodeEntry, HuffmanDecodeTable},
+    },
+    error::DecodeError,
 };
-use crate::entropy::huffman_decode_table::{HuffmanDecodeEntry, HuffmanDecodeTable};
-use crate::error::DecodeError;
 
 const FAST_PATH_SLACK: usize = 32;
 

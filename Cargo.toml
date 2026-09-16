@@ -2,6 +2,10 @@
 name = "osmo"
 version = "0.1.0"
 edition = "2024"
+authors = [
+    "Javier Osorio M <javier.osorio.mosquera@gmail.com>",
+    "Jorge Osorio M <joheosmo@gmail.com>"
+]
 
 [lib]
 crate-type = ["rlib"]

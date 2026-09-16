@@ -1,7 +1,6 @@
 use core::ptr;
 
-use crate::encode_error::EncodeError;
-use crate::entropy::huffman_encode_table::HuffmanEncodeTable;
+use crate::{encode_error::EncodeError, entropy::huffman_encode_table::HuffmanEncodeTable};
 
 const MAX_STREAM_COUNT: usize = 8;
 
@@ -180,11 +179,13 @@ fn get_segment_size(input_length: usize, stream_count: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entropy::fse_decode_table::FseDecodeTable;
-    use crate::entropy::histogram::count_symbols;
-    use crate::entropy::huffman_decode::{decode_many_streams, decode_one_stream};
-    use crate::entropy::huffman_decode_table::{HuffmanDecodeTable, read_huffman_table};
-    use crate::entropy::huffman_encode_table::{build_huffman_encode_table, write_direct_weights};
+    use crate::entropy::{
+        fse_decode_table::FseDecodeTable,
+        histogram::count_symbols,
+        huffman_decode::{decode_many_streams, decode_one_stream},
+        huffman_decode_table::{HuffmanDecodeTable, read_huffman_table},
+        huffman_encode_table::{build_huffman_encode_table, write_direct_weights},
+    };
 
     fn sample_text() -> Vec<u8> {
         let mut text = Vec::new();

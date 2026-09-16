@@ -1,23 +1,27 @@
-use crate::block::block_writer::write_block;
-use crate::block::repeat_offsets::RepeatOffsets;
-use crate::block::sequence_record::{MAX_SEQUENCES_PER_BLOCK, SequenceRecord};
-use crate::block::sequence_writer::SequenceEncodeTables;
 #[cfg(feature = "alloc")]
 use crate::block::sequences::TableMode;
-use crate::encode_error::EncodeError;
-use crate::entropy::fse_encode_table::FseEncodeTable;
-use crate::entropy::huffman_encode_table::HuffmanEncodeTable;
-use crate::frame::block_header::{BLOCK_HEADER_LENGTH, MAX_BLOCK_SIZE};
 #[cfg(feature = "parallel")]
 use crate::frame::chunk_index::ChunkEntry;
-use crate::frame::chunk_index::{CHUNK_COUNT_LENGTH, CHUNK_ENTRY_LENGTH};
-use crate::frame::frame_header::{FrameFormat, OSMO_CHECKSUM_LENGTH, ZSTD_CHECKSUM_LENGTH};
-use crate::frame::frame_writer::{MAX_FRAME_HEADER_LENGTH, write_checksum, write_frame_header};
-use crate::hash::{xxhash3, xxhash64};
-use crate::match_finder::MatchFinder;
 #[cfg(feature = "alloc")]
 use crate::match_finder::hash_table_finder::HASH_TABLE_SIZE;
-use crate::match_finder::hash_table_finder::HashTableFinder;
+use crate::{
+    block::{
+        block_writer::write_block,
+        repeat_offsets::RepeatOffsets,
+        sequence_record::{MAX_SEQUENCES_PER_BLOCK, SequenceRecord},
+        sequence_writer::SequenceEncodeTables,
+    },
+    encode_error::EncodeError,
+    entropy::{fse_encode_table::FseEncodeTable, huffman_encode_table::HuffmanEncodeTable},
+    frame::{
+        block_header::{BLOCK_HEADER_LENGTH, MAX_BLOCK_SIZE},
+        chunk_index::{CHUNK_COUNT_LENGTH, CHUNK_ENTRY_LENGTH},
+        frame_header::{FrameFormat, OSMO_CHECKSUM_LENGTH, ZSTD_CHECKSUM_LENGTH},
+        frame_writer::{MAX_FRAME_HEADER_LENGTH, write_checksum, write_frame_header},
+    },
+    hash::{xxhash3, xxhash64},
+    match_finder::{MatchFinder, hash_table_finder::HashTableFinder},
+};
 
 pub const MAX_CHUNK_SIZE: usize = 4 * 1024 * 1024;
 pub const DEFAULT_CHUNK_SIZE: usize = MAX_CHUNK_SIZE;
@@ -451,11 +455,14 @@ pub(crate) fn compress_chunk(
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        io::Write,
+        path::PathBuf,
+        process::{Command, Stdio},
+    };
+
     use super::*;
     use crate::decoder::{DecodeWorkspace, decompress, get_decompressed_size};
-    use std::io::Write;
-    use std::path::PathBuf;
-    use std::process::{Command, Stdio};
 
     fn find_zstd_cli() -> Option<PathBuf> {
         let output = Command::new("which").arg("zstd").output().ok()?;

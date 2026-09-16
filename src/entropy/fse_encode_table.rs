@@ -1,7 +1,8 @@
-use crate::bits::backward_bit_writer::BackwardBitWriter;
-use crate::bits::forward_bit_writer::ForwardBitWriter;
-use crate::encode_error::EncodeError;
-use crate::entropy::fse_decode_table::{MAX_ACCURACY_LOG, MAX_SYMBOL_COUNT, MAX_TABLE_SIZE};
+use crate::{
+    bits::{backward_bit_writer::BackwardBitWriter, forward_bit_writer::ForwardBitWriter},
+    encode_error::EncodeError,
+    entropy::fse_decode_table::{MAX_ACCURACY_LOG, MAX_SYMBOL_COUNT, MAX_TABLE_SIZE},
+};
 
 #[derive(Clone, Copy, Default)]
 pub struct FseSymbolTransform {
@@ -426,13 +427,17 @@ pub fn write_fse_table_description(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bits::backward_bit_reader::BackwardBitReader;
-    use crate::entropy::fse_decode_table::{
-        FseDecodeState, FseDecodeTable, build_fse_decode_table, read_fse_table_description,
-    };
-    use crate::entropy::fse_predefined::{
-        LITERAL_LENGTH_ACCURACY_LOG, LITERAL_LENGTH_DEFAULT_COUNTS,
-        build_predefined_literal_length_table,
+    use crate::{
+        bits::backward_bit_reader::BackwardBitReader,
+        entropy::{
+            fse_decode_table::{
+                FseDecodeState, FseDecodeTable, build_fse_decode_table, read_fse_table_description,
+            },
+            fse_predefined::{
+                LITERAL_LENGTH_ACCURACY_LOG, LITERAL_LENGTH_DEFAULT_COUNTS,
+                build_predefined_literal_length_table,
+            },
+        },
     };
 
     fn skewed_counts(symbol_count: usize) -> Vec<u32> {

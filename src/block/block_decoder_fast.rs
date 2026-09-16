@@ -1,12 +1,13 @@
-use crate::bits::fast_bit_reader::{FastBitReader, ReloadStatus};
-use crate::block::repeat_offsets::RepeatOffsets;
-use crate::block::sequence_tables_fast::{
-    FastSequenceEntry, FastSequenceTable, FastSequenceTables,
+use crate::{
+    bits::fast_bit_reader::{FastBitReader, ReloadStatus},
+    block::{
+        repeat_offsets::RepeatOffsets,
+        sequence_tables_fast::{FastSequenceEntry, FastSequenceTable, FastSequenceTables},
+    },
+    error::DecodeError,
+    frame::{block_header::MAX_BLOCK_SIZE, frame_header::FrameFormat},
+    simd::copy_bytes::{copy_bytes_overshoot_unchecked, fill_pattern},
 };
-use crate::error::DecodeError;
-use crate::frame::block_header::MAX_BLOCK_SIZE;
-use crate::frame::frame_header::FrameFormat;
-use crate::simd::copy_bytes::{copy_bytes_overshoot_unchecked, fill_pattern};
 
 struct SequenceStreamState {
     reader: FastBitReader,

@@ -1,6 +1,7 @@
-use crate::bits::backward_bit_reader::BackwardBitReader;
-use crate::bits::forward_bit_reader::ForwardBitReader;
-use crate::error::DecodeError;
+use crate::{
+    bits::{backward_bit_reader::BackwardBitReader, forward_bit_reader::ForwardBitReader},
+    error::DecodeError,
+};
 
 pub const MAX_ACCURACY_LOG: usize = 9;
 pub const MAX_TABLE_SIZE: usize = 1 << MAX_ACCURACY_LOG;

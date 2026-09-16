@@ -1,9 +1,12 @@
-use crate::entropy::fse_decode_table::FseDecodeTable;
-use crate::entropy::huffman_decode::{decode_many_streams_with_slack, decode_one_stream};
-use crate::entropy::huffman_decode_table::{HuffmanDecodeTable, read_huffman_table};
-use crate::error::DecodeError;
-use crate::frame::block_header::MAX_BLOCK_SIZE;
-use crate::frame::frame_header::FrameFormat;
+use crate::{
+    entropy::{
+        fse_decode_table::FseDecodeTable,
+        huffman_decode::{decode_many_streams_with_slack, decode_one_stream},
+        huffman_decode_table::{HuffmanDecodeTable, read_huffman_table},
+    },
+    error::DecodeError,
+    frame::{block_header::MAX_BLOCK_SIZE, frame_header::FrameFormat},
+};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LiteralsType {

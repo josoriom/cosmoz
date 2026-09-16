@@ -1,8 +1,13 @@
-use crate::encode_error::EncodeError;
-use crate::frame::block_header::{BLOCK_HEADER_LENGTH, BlockType, MAX_BLOCK_SIZE};
-use crate::frame::chunk_index::{CHUNK_COUNT_LENGTH, CHUNK_ENTRY_LENGTH, ChunkEntry};
-use crate::frame::frame_header::{
-    FrameFormat, OSMO_CHECKSUM_LENGTH, OSMO_MAGIC_NUMBER, ZSTD_CHECKSUM_LENGTH, ZSTD_MAGIC_NUMBER,
+use crate::{
+    encode_error::EncodeError,
+    frame::{
+        block_header::{BLOCK_HEADER_LENGTH, BlockType, MAX_BLOCK_SIZE},
+        chunk_index::{CHUNK_COUNT_LENGTH, CHUNK_ENTRY_LENGTH, ChunkEntry},
+        frame_header::{
+            FrameFormat, OSMO_CHECKSUM_LENGTH, OSMO_MAGIC_NUMBER, ZSTD_CHECKSUM_LENGTH,
+            ZSTD_MAGIC_NUMBER,
+        },
+    },
 };
 
 pub const MAX_FRAME_HEADER_LENGTH: usize = 14;

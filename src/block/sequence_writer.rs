@@ -1,22 +1,28 @@
-use crate::bits::backward_bit_writer::BackwardBitWriter;
-use crate::block::sequence_codes::{
-    LITERAL_LENGTH_CODE_COUNT, MATCH_LENGTH_CODE_COUNT, OFFSET_CODE_COUNT, get_literal_length_code,
-    get_literal_length_extra_bits, get_match_length_code, get_match_length_extra_bits,
-    get_offset_code,
+use crate::{
+    bits::backward_bit_writer::BackwardBitWriter,
+    block::{
+        sequence_codes::{
+            LITERAL_LENGTH_CODE_COUNT, MATCH_LENGTH_CODE_COUNT, OFFSET_CODE_COUNT,
+            get_literal_length_code, get_literal_length_extra_bits, get_match_length_code,
+            get_match_length_extra_bits, get_offset_code,
+        },
+        sequence_record::SequenceRecord,
+        sequences::TableMode,
+    },
+    encode_error::EncodeError,
+    entropy::{
+        fse_decode_table::MAX_SYMBOL_COUNT,
+        fse_encode_table::{
+            FseEncodeState, FseEncodeTable, FseSymbolTransform, build_fse_encode_table,
+            normalize_counts, pick_accuracy_log, write_fse_table_description,
+        },
+        fse_predefined::{
+            LITERAL_LENGTH_ACCURACY_LOG, LITERAL_LENGTH_DEFAULT_COUNTS, MATCH_LENGTH_ACCURACY_LOG,
+            MATCH_LENGTH_DEFAULT_COUNTS, OFFSET_ACCURACY_LOG, OFFSET_DEFAULT_COUNTS,
+        },
+    },
+    frame::frame_header::FrameFormat,
 };
-use crate::block::sequence_record::SequenceRecord;
-use crate::block::sequences::TableMode;
-use crate::encode_error::EncodeError;
-use crate::entropy::fse_decode_table::MAX_SYMBOL_COUNT;
-use crate::entropy::fse_encode_table::{
-    FseEncodeState, FseEncodeTable, FseSymbolTransform, build_fse_encode_table, normalize_counts,
-    pick_accuracy_log, write_fse_table_description,
-};
-use crate::entropy::fse_predefined::{
-    LITERAL_LENGTH_ACCURACY_LOG, LITERAL_LENGTH_DEFAULT_COUNTS, MATCH_LENGTH_ACCURACY_LOG,
-    MATCH_LENGTH_DEFAULT_COUNTS, OFFSET_ACCURACY_LOG, OFFSET_DEFAULT_COUNTS,
-};
-use crate::frame::frame_header::FrameFormat;
 
 pub struct SequenceEncodeTables {
     pub literal_length: FseEncodeTable,
@@ -446,9 +452,9 @@ fn write_stream_over_indices(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::block::repeat_offsets::RepeatOffsets;
-    use crate::block::sequences::{
-        SequenceDecoder, SequenceTables, read_sequence_tables, read_sequences_header,
+    use crate::block::{
+        repeat_offsets::RepeatOffsets,
+        sequences::{SequenceDecoder, SequenceTables, read_sequence_tables, read_sequences_header},
     };
 
     fn resolve_offset_values(records: &[SequenceRecord]) -> Vec<(u32, u32, u32)> {

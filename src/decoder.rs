@@ -1,14 +1,18 @@
-use crate::block::block_decoder::{BlockWorkspace, decode_block};
 #[cfg(feature = "alloc")]
 use crate::block::repeat_offsets::RepeatOffsets;
-use crate::error::DecodeError;
-use crate::frame::block_header::{BLOCK_HEADER_LENGTH, BlockType, read_block_header};
-use crate::frame::chunk_index::ChunkIndex;
-use crate::frame::frame_header::{
-    FrameFormat, FrameHeader, get_skippable_frame_length, is_skippable_frame, read_frame_header,
+use crate::{
+    block::block_decoder::{BlockWorkspace, decode_block},
+    error::DecodeError,
+    frame::{
+        block_header::{BLOCK_HEADER_LENGTH, BlockType, read_block_header},
+        chunk_index::ChunkIndex,
+        frame_header::{
+            FrameFormat, FrameHeader, get_skippable_frame_length, is_skippable_frame,
+            read_frame_header,
+        },
+    },
+    hash::{xxhash3::XxHash3, xxhash64::XxHash64},
 };
-use crate::hash::xxhash3::XxHash3;
-use crate::hash::xxhash64::XxHash64;
 
 pub struct DecodeWorkspace {
     pub block: BlockWorkspace,

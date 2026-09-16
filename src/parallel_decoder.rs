@@ -1,11 +1,11 @@
-use crate::decoder::{DecodeWorkspace, decode_block_sequence};
-use crate::error::DecodeError;
-use crate::frame::chunk_index::ChunkIndex;
-use crate::frame::frame_header::FrameFormat;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
-use std::thread;
-use std::vec::Vec;
+use std::{sync::Mutex, thread, vec::Vec};
+
+use crate::{
+    decoder::{DecodeWorkspace, decode_block_sequence},
+    error::DecodeError,
+    frame::{chunk_index::ChunkIndex, frame_header::FrameFormat},
+};
 
 pub fn decode_chunks_in_parallel(
     chunks_input: &[u8],

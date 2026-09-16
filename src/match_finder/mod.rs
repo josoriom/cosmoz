@@ -1,7 +1,6 @@
 pub mod hash_table_finder;
 
-use crate::block::repeat_offsets::RepeatOffsets;
-use crate::block::sequence_record::SequenceRecord;
+use crate::block::{repeat_offsets::RepeatOffsets, sequence_record::SequenceRecord};
 
 pub const MIN_MATCH: usize = 4;
 pub const MAX_OFFSET_LOG: u8 = 22;

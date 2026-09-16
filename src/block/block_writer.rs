@@ -1,12 +1,13 @@
-use crate::block::literals_writer::write_literals;
-use crate::block::sequence_record::SequenceRecord;
-use crate::block::sequence_writer::write_sequences;
-use crate::encode_error::EncodeError;
-use crate::encoder::EncodeWorkspace;
-use crate::frame::block_header::BlockType;
-use crate::frame::frame_header::FrameFormat;
-use crate::frame::frame_writer::write_block_header;
-use crate::match_finder::MatchFinder;
+use crate::{
+    block::{
+        literals_writer::write_literals, sequence_record::SequenceRecord,
+        sequence_writer::write_sequences,
+    },
+    encode_error::EncodeError,
+    encoder::EncodeWorkspace,
+    frame::{block_header::BlockType, frame_header::FrameFormat, frame_writer::write_block_header},
+    match_finder::MatchFinder,
+};
 
 pub fn write_block(
     input: &[u8],
@@ -166,9 +167,11 @@ fn write_compressed_block_body(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::block::block_decoder::BlockWorkspace;
-    use crate::decoder::decode_block_sequence;
-    use crate::frame::block_header::{MAX_BLOCK_SIZE, read_block_header};
+    use crate::{
+        block::block_decoder::BlockWorkspace,
+        decoder::decode_block_sequence,
+        frame::block_header::{MAX_BLOCK_SIZE, read_block_header},
+    };
 
     fn repeating_text(length: usize) -> Vec<u8> {
         let source = b"the quick brown fox jumps over the lazy dog while the sun sets slowly \

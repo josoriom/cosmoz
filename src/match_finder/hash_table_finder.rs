@@ -1,8 +1,11 @@
 use super::{MIN_MATCH, MatchFinder};
-use crate::block::repeat_offsets::RepeatOffsets;
-use crate::block::sequence_codes::MAX_MATCH_LENGTH;
-use crate::block::sequence_record::SequenceRecord;
-use crate::simd::count_matching_bytes::count_matching_bytes_unchecked;
+use crate::{
+    block::{
+        repeat_offsets::RepeatOffsets, sequence_codes::MAX_MATCH_LENGTH,
+        sequence_record::SequenceRecord,
+    },
+    simd::count_matching_bytes::count_matching_bytes_unchecked,
+};
 
 pub const HASH_LOG: usize = 16;
 pub const HASH_TABLE_SIZE: usize = 1 << HASH_LOG;

@@ -1,9 +1,13 @@
-use crate::block::sequence_codes::{
-    get_literal_length_base, get_literal_length_extra_bits, get_match_length_base,
-    get_match_length_extra_bits,
+use crate::{
+    block::{
+        sequence_codes::{
+            get_literal_length_base, get_literal_length_extra_bits, get_match_length_base,
+            get_match_length_extra_bits,
+        },
+        sequences::SequenceTables,
+    },
+    entropy::fse_decode_table::{FseDecodeTable, MAX_TABLE_SIZE},
 };
-use crate::block::sequences::SequenceTables;
-use crate::entropy::fse_decode_table::{FseDecodeTable, MAX_TABLE_SIZE};
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -131,10 +135,12 @@ impl Default for FastSequenceTables {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entropy::fse_decode_table::read_fse_table_description;
-    use crate::entropy::fse_predefined::{
-        build_predefined_literal_length_table, build_predefined_match_length_table,
-        build_predefined_offset_table,
+    use crate::entropy::{
+        fse_decode_table::read_fse_table_description,
+        fse_predefined::{
+            build_predefined_literal_length_table, build_predefined_match_length_table,
+            build_predefined_offset_table,
+        },
     };
 
     fn assert_literal_length_matches(

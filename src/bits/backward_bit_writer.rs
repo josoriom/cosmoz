@@ -1,5 +1,4 @@
-use crate::bits::forward_bit_writer::ForwardBitWriter;
-use crate::encode_error::EncodeError;
+use crate::{bits::forward_bit_writer::ForwardBitWriter, encode_error::EncodeError};
 
 pub struct BackwardBitWriter<'output> {
     bit_writer: ForwardBitWriter<'output>,
