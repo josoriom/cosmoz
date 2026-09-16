@@ -353,6 +353,7 @@ pub fn get_max_compressed_size(input_length: usize, options: &CompressOptions) -
     } else {
         0
     };
+    
 
     match options.format {
         FrameFormat::Zstd => {
