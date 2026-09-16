@@ -236,11 +236,12 @@ const MAX_WASM_CHUNK_INDEX_ENTRIES: usize = 4096;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn osmo_run_self_tests() -> i64 {
-    let kernels: [fn() -> Option<u32>; 5] = [
+    let kernels: [fn() -> Option<u32>; 6] = [
         crate::simd::copy_bytes::run_self_tests,
         crate::simd::count_matching_bytes::run_self_tests,
         crate::simd::hash_positions::run_self_tests,
         crate::simd::histogram::run_self_tests,
+        crate::simd::row_tag_match::run_self_tests,
         crate::simd::xxhash3_stripes::run_self_tests,
     ];
     for (kernel_index, kernel) in kernels.into_iter().enumerate() {

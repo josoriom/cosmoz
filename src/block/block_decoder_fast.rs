@@ -155,6 +155,143 @@ unsafe fn copy_match_unchecked(
     }
 }
 
+const SEQUENCE_LOOKAHEAD: usize = 4;
+
+#[inline(always)]
+fn prefetch_read(pointer: *const u8) {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::x86_64::_mm_prefetch(pointer as *const i8, core::arch::x86_64::_MM_HINT_T0);
+    }
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!(
+            "prfm pldl1keep, [{0}]",
+            in(reg) pointer,
+            options(nostack, preserves_flags, readonly),
+        );
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        let _ = pointer;
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct PlannedSequence {
+    literal_source_cursor: usize,
+    literal_length: usize,
+    destination_position: usize,
+    match_source_start: usize,
+    match_destination: usize,
+    match_length: usize,
+    offset: usize,
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe fn plan_sequence_unchecked(
+    stream: &mut SequenceStreamState,
+    tables: &FastSequenceTables,
+    repeat_offsets: &mut RepeatOffsets,
+    literal_cursor: &mut usize,
+    literal_count: usize,
+    position: &mut usize,
+    block_start: usize,
+    block_end: usize,
+) -> Result<PlannedSequence, DecodeError> {
+    let sequence = unsafe { decode_one_sequence_unchecked(stream, tables, repeat_offsets)? };
+
+    let literal_length = sequence.literal_length as usize;
+    let match_length = sequence.match_length as usize;
+    let offset = sequence.offset as usize;
+
+    let new_literal_cursor = literal_cursor
+        .checked_add(literal_length)
+        .ok_or(DecodeError::CorruptBitstream)?;
+    if new_literal_cursor > literal_count {
+        return Err(DecodeError::CorruptBitstream);
+    }
+
+    let after_position = position
+        .checked_add(literal_length)
+        .and_then(|value| value.checked_add(match_length))
+        .ok_or(DecodeError::BlockTooLarge)?;
+    if after_position - block_start > MAX_BLOCK_SIZE {
+        return Err(DecodeError::BlockTooLarge);
+    }
+    if after_position > block_end {
+        return Err(DecodeError::OutputTooSmall);
+    }
+
+    let literal_source_cursor = *literal_cursor;
+    let destination_position = *position;
+    *literal_cursor = new_literal_cursor;
+
+    let position_after_literals = destination_position + literal_length;
+
+    if offset == 0 || offset > position_after_literals {
+        return Err(DecodeError::BadOffset);
+    }
+    let match_source_start = position_after_literals - offset;
+
+    *position = after_position;
+
+    Ok(PlannedSequence {
+        literal_source_cursor,
+        literal_length,
+        destination_position,
+        match_source_start,
+        match_destination: position_after_literals,
+        match_length,
+        offset,
+    })
+}
+
+unsafe fn execute_planned_sequence_unchecked(
+    output_base: *mut u8,
+    literals: *const u8,
+    plan: &PlannedSequence,
+) {
+    if plan.literal_length > 0 {
+        unsafe {
+            copy_literals_unchecked(
+                literals,
+                plan.literal_source_cursor,
+                plan.literal_length,
+                output_base.add(plan.destination_position),
+            );
+        }
+    }
+
+    if plan.match_length > 0 {
+        if plan.offset >= 16 {
+            unsafe {
+                copy_match_unchecked(
+                    output_base,
+                    plan.match_source_start,
+                    plan.match_destination,
+                    plan.match_length,
+                );
+            }
+        } else {
+            let mut pattern_bytes = [0u8; 16];
+            unsafe {
+                let source = output_base.add(plan.match_source_start);
+                let mut index = 0usize;
+                while index < plan.offset {
+                    pattern_bytes[index] = *source.add(index);
+                    index += 1;
+                }
+                let destination = core::slice::from_raw_parts_mut(
+                    output_base.add(plan.match_destination),
+                    plan.match_length,
+                );
+                fill_pattern(&pattern_bytes[..plan.offset], destination);
+            }
+        }
+    }
+}
+
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
 unsafe fn execute_sequence_unchecked(
@@ -257,19 +394,33 @@ pub(crate) unsafe fn decode_sequences_unchecked(
     let mut literal_cursor = 0usize;
 
     while !stream.is_finished() {
-        let sequence =
-            unsafe { decode_one_sequence_unchecked(&mut stream, tables, repeat_offsets)? };
-        unsafe {
-            execute_sequence_unchecked(
-                output_base,
-                &mut position,
-                literals,
-                &mut literal_cursor,
-                literal_count,
-                &sequence,
-                output_position,
-                output_end,
-            )?;
+        let mut batch = [PlannedSequence::default(); SEQUENCE_LOOKAHEAD];
+        let mut batch_length = 0usize;
+
+        while batch_length < SEQUENCE_LOOKAHEAD && !stream.is_finished() {
+            let plan = unsafe {
+                plan_sequence_unchecked(
+                    &mut stream,
+                    tables,
+                    repeat_offsets,
+                    &mut literal_cursor,
+                    literal_count,
+                    &mut position,
+                    output_position,
+                    output_end,
+                )?
+            };
+            if plan.match_length > 0 {
+                prefetch_read(unsafe { output_base.add(plan.match_source_start) });
+            }
+            batch[batch_length] = plan;
+            batch_length += 1;
+        }
+
+        for plan in &batch[..batch_length] {
+            unsafe {
+                execute_planned_sequence_unchecked(output_base, literals, plan);
+            }
         }
     }
 

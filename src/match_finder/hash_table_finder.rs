@@ -34,6 +34,10 @@ impl MatchFinder for HashTableFinder {
         self.positions = [u32::MAX; HASH_TABLE_SIZE];
     }
 
+    fn window_log(&self) -> u8 {
+        self.window_log
+    }
+
     fn find_sequences(
         &mut self,
         input: &[u8],

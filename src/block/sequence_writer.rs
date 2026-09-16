@@ -52,6 +52,29 @@ impl Default for SequenceEncodeTables {
     }
 }
 
+impl SequenceEncodeTables {
+    pub fn snapshot(&self) -> Self {
+        Self {
+            literal_length: clone_fse_encode_table(&self.literal_length),
+            offset: clone_fse_encode_table(&self.offset),
+            match_length: clone_fse_encode_table(&self.match_length),
+            literal_length_mode: self.literal_length_mode,
+            offset_mode: self.offset_mode,
+            match_length_mode: self.match_length_mode,
+        }
+    }
+}
+
+fn clone_fse_encode_table(table: &FseEncodeTable) -> FseEncodeTable {
+    FseEncodeTable {
+        next_state: table.next_state,
+        transforms: table.transforms,
+        normalized_counts: table.normalized_counts,
+        symbol_count: table.symbol_count,
+        accuracy_log: table.accuracy_log,
+    }
+}
+
 pub fn write_sequences(
     sequences: &[SequenceRecord],
     format: FrameFormat,

@@ -1,13 +1,23 @@
+#[cfg(feature = "alloc")]
+use alloc::vec::Vec;
+
+#[cfg(feature = "alloc")]
+use crate::{block::block_splitter, frame::block_header::BLOCK_HEADER_LENGTH};
 use crate::{
     block::{
-        literals_writer::write_literals, sequence_record::SequenceRecord,
-        sequence_writer::write_sequences,
+        literals_writer::write_literals,
+        sequence_record::SequenceRecord,
+        sequence_writer::{SequenceEncodeTables, write_sequences},
     },
     encode_error::EncodeError,
     encoder::EncodeWorkspace,
+    entropy::huffman_encode_table::HuffmanEncodeTable,
     frame::{block_header::BlockType, frame_header::FrameFormat, frame_writer::write_block_header},
     match_finder::MatchFinder,
 };
+
+#[cfg(feature = "alloc")]
+const MIN_LEVEL_FOR_BLOCK_SPLITTING: u8 = 6;
 
 pub fn write_block(
     input: &[u8],
@@ -17,6 +27,11 @@ pub fn write_block(
     output: &mut [u8],
     workspace: &mut EncodeWorkspace,
 ) -> Result<usize, EncodeError> {
+    if block_start == 0 {
+        workspace.huffman_table = HuffmanEncodeTable::new();
+        workspace.sequence_tables = SequenceEncodeTables::new();
+    }
+
     let block_content = &input[block_start..];
 
     if block_content.is_empty() {
@@ -31,6 +46,8 @@ pub fn write_block(
     let saved_first_offset = workspace.repeat_offsets.first;
     let saved_second_offset = workspace.repeat_offsets.second;
     let saved_third_offset = workspace.repeat_offsets.third;
+    let saved_huffman_table = snapshot_huffman_table(&workspace.huffman_table);
+    let saved_sequence_tables = workspace.sequence_tables.snapshot();
 
     let (sequence_count, tail_literal_count) = workspace.match_finder.find_sequences(
         input,
@@ -46,6 +63,100 @@ pub fn write_block(
         &mut workspace.literals,
     );
 
+    let table_reuse_allowed = block_start != 0;
+
+    #[cfg(feature = "alloc")]
+    if workspace.level >= MIN_LEVEL_FOR_BLOCK_SPLITTING {
+        let split_points = block_splitter::split_block(
+            &workspace.sequences[..sequence_count],
+            &workspace.literals[..literal_count],
+            format,
+        );
+
+        if !split_points.is_empty() {
+            let mut boundaries: Vec<usize> = Vec::with_capacity(split_points.len() + 2);
+            boundaries.push(0);
+            boundaries.extend_from_slice(&split_points);
+            boundaries.push(sequence_count);
+
+            let single_total_cost = write_compressed_block_body(
+                &workspace.literals[..literal_count],
+                &workspace.sequences[..sequence_count],
+                format,
+                &mut workspace.block_scratch,
+                &mut workspace.huffman_table,
+                &mut workspace.weight_fse_table,
+                &mut workspace.sequence_tables,
+                table_reuse_allowed,
+                &mut workspace.entropy_scratch,
+            )
+            .map(|length| {
+                if length < block_content.len() {
+                    length + BLOCK_HEADER_LENGTH
+                } else {
+                    block_content.len() + BLOCK_HEADER_LENGTH
+                }
+            })
+            .unwrap_or(block_content.len() + BLOCK_HEADER_LENGTH);
+
+            workspace.huffman_table = snapshot_huffman_table(&saved_huffman_table);
+            workspace.sequence_tables = saved_sequence_tables.snapshot();
+
+            match write_block_as_split_pieces(
+                block_content,
+                format,
+                is_last,
+                output,
+                workspace,
+                &boundaries,
+                literal_count,
+                table_reuse_allowed,
+            ) {
+                Ok(Some(split_total)) if split_total < single_total_cost => {
+                    return Ok(split_total);
+                }
+                Ok(_) => {
+                    workspace.huffman_table = snapshot_huffman_table(&saved_huffman_table);
+                    workspace.sequence_tables = saved_sequence_tables.snapshot();
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    commit_single_block(
+        block_content,
+        format,
+        is_last,
+        output,
+        workspace,
+        literal_count,
+        sequence_count,
+        table_reuse_allowed,
+        saved_first_offset,
+        saved_second_offset,
+        saved_third_offset,
+        saved_huffman_table,
+        saved_sequence_tables,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn commit_single_block(
+    block_content: &[u8],
+    format: FrameFormat,
+    is_last: bool,
+    output: &mut [u8],
+    workspace: &mut EncodeWorkspace,
+    literal_count: usize,
+    sequence_count: usize,
+    table_reuse_allowed: bool,
+    saved_first_offset: u32,
+    saved_second_offset: u32,
+    saved_third_offset: u32,
+    saved_huffman_table: HuffmanEncodeTable,
+    saved_sequence_tables: SequenceEncodeTables,
+) -> Result<usize, EncodeError> {
     let compressed_body_length = write_compressed_block_body(
         &workspace.literals[..literal_count],
         &workspace.sequences[..sequence_count],
@@ -54,6 +165,7 @@ pub fn write_block(
         &mut workspace.huffman_table,
         &mut workspace.weight_fse_table,
         &mut workspace.sequence_tables,
+        table_reuse_allowed,
         &mut workspace.entropy_scratch,
     );
 
@@ -74,8 +186,111 @@ pub fn write_block(
             workspace.repeat_offsets.first = saved_first_offset;
             workspace.repeat_offsets.second = saved_second_offset;
             workspace.repeat_offsets.third = saved_third_offset;
+            workspace.huffman_table = saved_huffman_table;
+            workspace.sequence_tables = saved_sequence_tables;
             write_raw_block(block_content, is_last, output)
         }
+    }
+}
+
+#[cfg(feature = "alloc")]
+#[allow(clippy::too_many_arguments)]
+fn write_block_as_split_pieces(
+    block_content: &[u8],
+    format: FrameFormat,
+    is_last: bool,
+    output: &mut [u8],
+    workspace: &mut EncodeWorkspace,
+    boundaries: &[usize],
+    literal_count: usize,
+    table_reuse_allowed: bool,
+) -> Result<Option<usize>, EncodeError> {
+    let sequence_count = *boundaries.last().expect("boundaries must not be empty");
+
+    let mut literal_prefix = alloc::vec![0u32; sequence_count + 1];
+    let mut byte_prefix = alloc::vec![0u32; sequence_count + 1];
+    let mut literal_accumulator = 0u32;
+    let mut byte_accumulator = 0u32;
+    for (index, sequence) in workspace.sequences[..sequence_count].iter().enumerate() {
+        literal_accumulator += sequence.literal_length;
+        byte_accumulator += sequence.literal_length + sequence.match_length;
+        literal_prefix[index + 1] = literal_accumulator;
+        byte_prefix[index + 1] = byte_accumulator;
+    }
+
+    let mut output_position = 0usize;
+    let mut content_position = 0usize;
+
+    for (piece_index, window) in boundaries.windows(2).enumerate() {
+        let sequence_start = window[0];
+        let sequence_end = window[1];
+        let is_last_piece = sequence_end == sequence_count;
+        let is_last_block = is_last_piece && is_last;
+
+        let piece_literal_start = literal_prefix[sequence_start] as usize;
+        let piece_literal_end = if is_last_piece {
+            literal_count
+        } else {
+            literal_prefix[sequence_end] as usize
+        };
+        let piece_byte_length = if is_last_piece {
+            block_content.len() - content_position
+        } else {
+            (byte_prefix[sequence_end] - byte_prefix[sequence_start]) as usize
+        };
+        let piece_bytes = &block_content[content_position..content_position + piece_byte_length];
+        let piece_table_reuse_allowed = if piece_index == 0 {
+            table_reuse_allowed
+        } else {
+            true
+        };
+
+        let body_length = write_compressed_block_body(
+            &workspace.literals[piece_literal_start..piece_literal_end],
+            &workspace.sequences[sequence_start..sequence_end],
+            format,
+            &mut workspace.block_scratch,
+            &mut workspace.huffman_table,
+            &mut workspace.weight_fse_table,
+            &mut workspace.sequence_tables,
+            piece_table_reuse_allowed,
+            &mut workspace.entropy_scratch,
+        );
+
+        let body_length = match body_length {
+            Ok(length) if length < piece_bytes.len() => length,
+            _ => return Ok(None),
+        };
+
+        let header_length = write_block_header(
+            output
+                .get_mut(output_position..)
+                .ok_or(EncodeError::OutputTooSmall)?,
+            BlockType::Compressed,
+            body_length,
+            is_last_block,
+        )?;
+        let total_piece_length = header_length
+            .checked_add(body_length)
+            .ok_or(EncodeError::OutputTooSmall)?;
+        let destination = output
+            .get_mut(output_position + header_length..output_position + total_piece_length)
+            .ok_or(EncodeError::OutputTooSmall)?;
+        destination.copy_from_slice(&workspace.block_scratch[..body_length]);
+
+        output_position += total_piece_length;
+        content_position += piece_byte_length;
+    }
+
+    Ok(Some(output_position))
+}
+
+fn snapshot_huffman_table(table: &HuffmanEncodeTable) -> HuffmanEncodeTable {
+    HuffmanEncodeTable {
+        codes: table.codes,
+        weights: table.weights,
+        symbol_count: table.symbol_count,
+        max_bits: table.max_bits,
     }
 }
 
@@ -138,9 +353,10 @@ fn write_compressed_block_body(
     sequences: &[SequenceRecord],
     format: FrameFormat,
     output: &mut [u8],
-    huffman_table: &mut crate::entropy::huffman_encode_table::HuffmanEncodeTable,
+    huffman_table: &mut HuffmanEncodeTable,
     weight_fse_table: &mut crate::entropy::fse_encode_table::FseEncodeTable,
-    sequence_tables: &mut crate::block::sequence_writer::SequenceEncodeTables,
+    sequence_tables: &mut SequenceEncodeTables,
+    table_reuse_allowed: bool,
     scratch: &mut [u8],
 ) -> Result<usize, EncodeError> {
     let literals_length = write_literals(
@@ -149,6 +365,7 @@ fn write_compressed_block_body(
         output,
         huffman_table,
         weight_fse_table,
+        table_reuse_allowed,
         scratch,
     )?;
     let sequences_output = output

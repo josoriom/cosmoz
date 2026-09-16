@@ -20,6 +20,14 @@ pub fn encode_one_stream(
     Ok(unsafe { encode_stream_unchecked(input, table, output.as_mut_ptr(), output.len()) })
 }
 
+fn pick_unroll_count(max_bits: u8) -> usize {
+    if max_bits == 0 {
+        return 4;
+    }
+    let max_bits = max_bits as usize;
+    (56 / max_bits).clamp(4, 9)
+}
+
 unsafe fn encode_stream_unchecked(
     input: &[u8],
     table: &HuffmanEncodeTable,
@@ -27,6 +35,38 @@ unsafe fn encode_stream_unchecked(
     output_capacity: usize,
 ) -> usize {
     debug_assert!(output_capacity >= encode_stream_capacity(input.len()));
+    unsafe {
+        match pick_unroll_count(table.max_bits) {
+            9 => {
+                encode_stream_unrolled_unchecked::<9>(input, table, output_pointer, output_capacity)
+            }
+            8 => {
+                encode_stream_unrolled_unchecked::<8>(input, table, output_pointer, output_capacity)
+            }
+            7 => {
+                encode_stream_unrolled_unchecked::<7>(input, table, output_pointer, output_capacity)
+            }
+            6 => {
+                encode_stream_unrolled_unchecked::<6>(input, table, output_pointer, output_capacity)
+            }
+            5 => {
+                encode_stream_unrolled_unchecked::<5>(input, table, output_pointer, output_capacity)
+            }
+            _ => {
+                encode_stream_unrolled_unchecked::<4>(input, table, output_pointer, output_capacity)
+            }
+        }
+    }
+}
+
+unsafe fn encode_stream_unrolled_unchecked<const UNROLL: usize>(
+    input: &[u8],
+    table: &HuffmanEncodeTable,
+    output_pointer: *mut u8,
+    output_capacity: usize,
+) -> usize {
+    debug_assert!(output_capacity >= encode_stream_capacity(input.len()));
+    debug_assert!(UNROLL * table.max_bits as usize + 7 < 64);
     let length = input.len();
     let codes = &table.codes;
 
@@ -35,7 +75,7 @@ unsafe fn encode_stream_unchecked(
     let mut write_position: usize = 0;
     let mut index = length;
 
-    let remainder = length % 4;
+    let remainder = length % UNROLL;
     for _ in 0..remainder {
         index -= 1;
         unsafe {
@@ -58,9 +98,9 @@ unsafe fn encode_stream_unchecked(
     }
 
     while index > 0 {
-        index -= 4;
+        index -= UNROLL;
         unsafe {
-            for offset in (0..4).rev() {
+            for offset in (0..UNROLL).rev() {
                 let symbol = *input.get_unchecked(index + offset);
                 let code = codes.get_unchecked(symbol as usize);
                 container |= (code.code as u64) << bits_in_container;

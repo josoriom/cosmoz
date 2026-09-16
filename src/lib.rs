@@ -18,7 +18,7 @@ pub mod parallel_decoder;
 #[cfg(feature = "parallel")]
 pub mod parallel_encoder;
 pub mod simd;
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "wasm-exports"))]
 pub mod wasm;
 
 pub use decoder::{DecodeWorkspace, decompress, get_decompressed_size};

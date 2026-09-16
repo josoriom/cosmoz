@@ -21,6 +21,7 @@ pub fn write_literals(
     output: &mut [u8],
     huffman_table: &mut HuffmanEncodeTable,
     weight_fse_table: &mut FseEncodeTable,
+    table_reuse_allowed: bool,
     scratch: &mut [u8],
 ) -> Result<usize, EncodeError> {
     if input.is_empty() {
@@ -38,6 +39,7 @@ pub fn write_literals(
         output,
         huffman_table,
         weight_fse_table,
+        table_reuse_allowed,
         scratch,
     ) {
         Ok(written) => Ok(written),
@@ -77,36 +79,94 @@ fn write_rle_literals(byte: u8, length: usize, output: &mut [u8]) -> Result<usiz
     Ok(total_size)
 }
 
+fn estimate_huffman_bit_cost(counts: &[u32; 256], table: &HuffmanEncodeTable) -> Option<usize> {
+    let mut total_bits = 0usize;
+    for (symbol, &count) in counts.iter().enumerate() {
+        if count == 0 {
+            continue;
+        }
+        let bit_count = table.codes[symbol].bit_count;
+        if bit_count == 0 {
+            return None;
+        }
+        total_bits += count as usize * bit_count as usize;
+    }
+    Some(total_bits)
+}
+
 fn write_compressed_literals(
     input: &[u8],
     format: FrameFormat,
     output: &mut [u8],
     huffman_table: &mut HuffmanEncodeTable,
     weight_fse_table: &mut FseEncodeTable,
+    table_reuse_allowed: bool,
     _scratch: &mut [u8],
 ) -> Result<usize, EncodeError> {
     let mut counts = [0u32; 256];
     count_symbols(input, &mut counts);
-    build_huffman_encode_table(&counts, huffman_table)?;
+
+    let treeless_bit_cost = if table_reuse_allowed {
+        estimate_huffman_bit_cost(&counts, huffman_table)
+    } else {
+        None
+    };
+
+    let mut candidate_table = HuffmanEncodeTable::new();
+    build_huffman_encode_table(&counts, &mut candidate_table)?;
+    let candidate_bit_cost =
+        estimate_huffman_bit_cost(&counts, &candidate_table).ok_or(EncodeError::TableNotUsable)?;
+
+    let mut table_description_scratch = [0u8; 512];
+    let candidate_table_bytes = write_huffman_table(
+        &mut table_description_scratch,
+        &candidate_table,
+        weight_fse_table,
+    )?;
+
+    let use_treeless = match treeless_bit_cost {
+        Some(treeless_bits) => treeless_bits < candidate_bit_cost + candidate_table_bytes * 8,
+        None => false,
+    };
 
     let regenerated_size = input.len();
     let stream_count = pick_stream_count(format, regenerated_size);
     let size_format = pick_size_format_from_regenerated_size(stream_count, regenerated_size)
         .ok_or(EncodeError::TableNotUsable)?;
-    let header_length = literals_header_length(LiteralsType::Compressed, size_format);
+    let literals_type = if use_treeless {
+        LiteralsType::Treeless
+    } else {
+        LiteralsType::Compressed
+    };
+    let header_length = literals_header_length(literals_type, size_format);
 
     let body = output
         .get_mut(header_length..)
         .ok_or(EncodeError::OutputTooSmall)?;
-    let table_bytes = write_huffman_table(body, huffman_table, weight_fse_table)?;
+
+    let table_bytes = if use_treeless {
+        0
+    } else {
+        let destination = body
+            .get_mut(..candidate_table_bytes)
+            .ok_or(EncodeError::OutputTooSmall)?;
+        destination.copy_from_slice(&table_description_scratch[..candidate_table_bytes]);
+        candidate_table_bytes
+    };
+
+    let encode_table: &HuffmanEncodeTable = if use_treeless {
+        &*huffman_table
+    } else {
+        &candidate_table
+    };
 
     let stream_output = body
         .get_mut(table_bytes..)
         .ok_or(EncodeError::OutputTooSmall)?;
     let stream_bytes = if stream_count == 1 {
-        encode_one_stream(input, huffman_table, stream_output)?
+        encode_one_stream(input, encode_table, stream_output)?
     } else {
-        encode_many_streams(input, huffman_table, stream_count, stream_output)?
+        encode_many_streams(input, encode_table, stream_count, stream_output)?
     };
 
     let compressed_size = table_bytes + stream_bytes;
@@ -125,9 +185,13 @@ fn write_compressed_literals(
         return Err(EncodeError::TableNotUsable);
     }
 
+    if !use_treeless {
+        *huffman_table = candidate_table;
+    }
+
     write_literals_header(
         output,
-        LiteralsType::Compressed,
+        literals_type,
         size_format,
         regenerated_size,
         compressed_size,
@@ -295,6 +359,7 @@ behind the distant hills and the wind carries the scent of rain across the quiet
             &mut output,
             &mut huffman_encode_table,
             &mut weight_fse_table,
+            false,
             &mut scratch,
         )
         .unwrap();
@@ -346,6 +411,7 @@ behind the distant hills and the wind carries the scent of rain across the quiet
             &mut output,
             &mut huffman_encode_table,
             &mut weight_fse_table,
+            false,
             &mut scratch,
         )
         .unwrap();
@@ -377,6 +443,7 @@ behind the distant hills and the wind carries the scent of rain across the quiet
             &mut output,
             &mut huffman_encode_table,
             &mut weight_fse_table,
+            false,
             &mut scratch,
         )
         .unwrap();
@@ -406,6 +473,7 @@ behind the distant hills and the wind carries the scent of rain across the quiet
             &mut output,
             &mut huffman_encode_table,
             &mut weight_fse_table,
+            false,
             &mut scratch,
         )
         .unwrap();
@@ -434,6 +502,7 @@ behind the distant hills and the wind carries the scent of rain across the quiet
             &mut output,
             &mut huffman_encode_table,
             &mut weight_fse_table,
+            false,
             &mut scratch,
         )
         .unwrap();

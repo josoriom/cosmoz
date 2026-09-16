@@ -15,6 +15,7 @@ default = []
 alloc = []
 std = ["alloc"]
 parallel = ["std"]
+wasm-exports = []
 
 [dependencies]
 

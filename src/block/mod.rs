@@ -1,5 +1,7 @@
 pub mod block_decoder;
 pub mod block_decoder_fast;
+#[cfg(feature = "alloc")]
+pub mod block_splitter;
 pub mod block_writer;
 pub mod literals;
 pub mod literals_writer;
