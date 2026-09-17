@@ -321,7 +321,8 @@ mod tests {
             read_frame_header(&[0x28, 0xB5, 0x2F, 0xFD, 0x00, 0x58]).unwrap();
         assert_eq!(zstd_without_checksum.checksum_length(), 0);
 
-        let cosmoz_with_checksum = read_frame_header(&[0x4F, 0x53, 0x4D, 0x4F, 0x24, 0x40]).unwrap();
+        let cosmoz_with_checksum =
+            read_frame_header(&[0x4F, 0x53, 0x4D, 0x4F, 0x24, 0x40]).unwrap();
         assert_eq!(cosmoz_with_checksum.checksum_length(), 8);
 
         let cosmoz_without_checksum =

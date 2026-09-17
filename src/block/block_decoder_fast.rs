@@ -1,12 +1,13 @@
 use crate::{
     bits::fast_bit_reader::{FastBitReader, ReloadStatus},
     block::{
+        block_decoder::{FAST_PATH_SLACK, copy_match},
         repeat_offsets::RepeatOffsets,
         sequence_tables_fast::{FastSequenceEntry, FastSequenceTable, FastSequenceTables},
     },
     error::DecodeError,
     frame::{block_header::MAX_BLOCK_SIZE, frame_header::FrameFormat},
-    simd::copy_bytes::{copy_bytes_overshoot_unchecked, fill_pattern},
+    simd::copy_bytes::{copy_bytes_overshoot_unchecked, copy_match_overshoot_unchecked},
 };
 
 struct SequenceStreamState {
@@ -174,31 +175,18 @@ unsafe fn copy_literals_unchecked(
     literal_cursor: usize,
     length: usize,
     output_cursor: *mut u8,
+    exact: bool,
 ) {
     unsafe {
         let source = literals.add(literal_cursor);
+        if exact {
+            core::ptr::copy_nonoverlapping(source, output_cursor, length);
+            return;
+        }
         copy_bytes_overshoot_unchecked(source, output_cursor, 16);
         if length > 16 {
             copy_bytes_overshoot_unchecked(source.add(16), output_cursor.add(16), length - 16);
         }
-    }
-}
-
-#[inline(always)]
-unsafe fn copy_match_unchecked(
-    output_base: *mut u8,
-    source_start: usize,
-    output_position: usize,
-    length: usize,
-) {
-    let mut written = 0usize;
-    while written < length {
-        unsafe {
-            let source_pointer = output_base.add(source_start + written) as *const u8;
-            let destination_pointer = output_base.add(output_position + written);
-            copy_bytes_overshoot_unchecked(source_pointer, destination_pointer, 16);
-        }
-        written += 16;
     }
 }
 
@@ -235,6 +223,7 @@ unsafe fn execute_sequence_unchecked(
     if after_position > block_end {
         return Err(DecodeError::OutputTooSmall);
     }
+    let exact = block_end - after_position < FAST_PATH_SLACK;
 
     if literal_length > 0 {
         unsafe {
@@ -243,6 +232,7 @@ unsafe fn execute_sequence_unchecked(
                 *literal_cursor,
                 literal_length,
                 output_base.add(*position),
+                exact,
             );
         }
     }
@@ -252,26 +242,13 @@ unsafe fn execute_sequence_unchecked(
     if offset == 0 || offset > *position {
         return Err(DecodeError::BadOffset);
     }
-    let source_start = *position - offset;
 
-    if match_length > 0 {
-        if offset >= 16 {
-            unsafe {
-                copy_match_unchecked(output_base, source_start, *position, match_length);
-            }
-        } else {
-            let mut pattern_bytes = [0u8; 16];
-            unsafe {
-                let source = output_base.add(source_start);
-                let mut index = 0usize;
-                while index < offset {
-                    pattern_bytes[index] = *source.add(index);
-                    index += 1;
-                }
-                let destination =
-                    core::slice::from_raw_parts_mut(output_base.add(*position), match_length);
-                fill_pattern(&pattern_bytes[..offset], destination);
-            }
+    if exact {
+        let output = unsafe { core::slice::from_raw_parts_mut(output_base, block_end) };
+        copy_match(output, *position, offset, match_length)?;
+    } else if match_length > 0 {
+        unsafe {
+            copy_match_overshoot_unchecked(output_base.add(*position), offset, match_length);
         }
     }
     *position = after_position;
@@ -341,6 +318,7 @@ pub(crate) unsafe fn decode_sequences_unchecked(
                 literal_cursor,
                 remaining,
                 output_base.add(position),
+                output_end - after_position < FAST_PATH_SLACK,
             );
         }
         position = after_position;
@@ -428,6 +406,7 @@ unsafe fn decode_sequences_two_streams_unchecked(
                 literal_cursor,
                 remaining,
                 output_base.add(position),
+                output_end - after_position < FAST_PATH_SLACK,
             );
         }
         position = after_position;
@@ -468,8 +447,7 @@ fn split_cosmoz_streams(
 
 /// # Safety
 ///
-/// `output` must have at least `MAX_BLOCK_SIZE + 32` bytes free from `output_position`,
-/// and `literals` must be followed by at least 16 readable bytes within its own
+/// `literals` must be followed by at least 16 readable bytes within its own
 /// allocation, because literal copies overshoot to a 16-byte boundary.
 #[allow(clippy::too_many_arguments)]
 pub(crate) unsafe fn decode_sequences_fast_path_unchecked(
@@ -484,7 +462,6 @@ pub(crate) unsafe fn decode_sequences_fast_path_unchecked(
     repeat_offsets: &mut RepeatOffsets,
 ) -> Result<usize, DecodeError> {
     debug_assert!(sequence_count > 0);
-    debug_assert!(output.len() >= output_position + MAX_BLOCK_SIZE + 32);
 
     let output_end = output.len();
     let output_base = output.as_mut_ptr();

@@ -1,5 +1,3 @@
-const TILE_LENGTH: usize = 48;
-
 pub fn copy_bytes(source: &[u8], destination: &mut [u8]) {
     assert_eq!(source.len(), destination.len());
     #[cfg(target_arch = "aarch64")]
@@ -22,36 +20,6 @@ pub fn copy_bytes(source: &[u8], destination: &mut [u8]) {
     copy_bytes_scalar(source, destination);
 }
 
-pub fn fill_pattern(pattern: &[u8], destination: &mut [u8]) {
-    assert!(!pattern.is_empty());
-    assert!(pattern.len() <= 32);
-    let tile = build_tile(pattern);
-    let pattern_length = pattern.len();
-    #[cfg(target_arch = "aarch64")]
-    return fill_pattern_neon(&tile, pattern_length, destination);
-    #[cfg(target_arch = "x86_64")]
-    return fill_pattern_sse2(&tile, pattern_length, destination);
-    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
-    return fill_pattern_simd128(&tile, pattern_length, destination);
-    #[cfg(not(any(
-        target_arch = "aarch64",
-        target_arch = "x86_64",
-        all(target_arch = "wasm32", target_feature = "simd128")
-    )))]
-    fill_pattern_scalar(&tile, pattern_length, destination, 0);
-}
-
-fn build_tile(pattern: &[u8]) -> [u8; TILE_LENGTH] {
-    let mut tile = [0u8; TILE_LENGTH];
-    let pattern_length = pattern.len();
-    let mut index = 0usize;
-    while index < TILE_LENGTH {
-        tile[index] = pattern[index % pattern_length];
-        index += 1;
-    }
-    tile
-}
-
 fn copy_bytes_scalar(source: &[u8], destination: &mut [u8]) {
     let length = source.len();
     let mut position = 0usize;
@@ -63,27 +31,6 @@ fn copy_bytes_scalar(source: &[u8], destination: &mut [u8]) {
     while position < length {
         destination[position] = source[position];
         position += 1;
-    }
-}
-
-fn fill_pattern_scalar(
-    tile: &[u8; TILE_LENGTH],
-    pattern_length: usize,
-    destination: &mut [u8],
-    start_phase: usize,
-) {
-    let mut position = 0usize;
-    while position < destination.len() {
-        let start = (start_phase + position) % pattern_length;
-        let remaining = destination.len() - position;
-        if remaining >= 8 {
-            let word = u64::from_le_bytes(tile[start..start + 8].try_into().unwrap());
-            destination[position..position + 8].copy_from_slice(&word.to_le_bytes());
-            position += 8;
-        } else {
-            destination[position] = tile[start];
-            position += 1;
-        }
     }
 }
 
@@ -106,23 +53,6 @@ unsafe fn copy_bytes_neon(source: *const u8, destination: *mut u8, length: usize
     }
 }
 
-#[cfg(target_arch = "aarch64")]
-fn fill_pattern_neon(tile: &[u8; TILE_LENGTH], pattern_length: usize, destination: &mut [u8]) {
-    use core::arch::aarch64::{vld1q_u8, vst1q_u8};
-    let mut position = 0usize;
-    while position + 16 <= destination.len() {
-        let start = position % pattern_length;
-        unsafe {
-            let chunk = vld1q_u8(tile.as_ptr().add(start));
-            vst1q_u8(destination.as_mut_ptr().add(position), chunk);
-        }
-        position += 16;
-    }
-    if position < destination.len() {
-        fill_pattern_scalar(tile, pattern_length, &mut destination[position..], position);
-    }
-}
-
 #[cfg(target_arch = "x86_64")]
 unsafe fn copy_bytes_sse2(source: *const u8, destination: *mut u8, length: usize) {
     use core::arch::x86_64::{__m128i, _mm_loadu_si128, _mm_storeu_si128};
@@ -139,26 +69,6 @@ unsafe fn copy_bytes_sse2(source: *const u8, destination: *mut u8, length: usize
             *destination.add(position) = *source.add(position);
         }
         position += 1;
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-fn fill_pattern_sse2(tile: &[u8; TILE_LENGTH], pattern_length: usize, destination: &mut [u8]) {
-    use core::arch::x86_64::{__m128i, _mm_loadu_si128, _mm_storeu_si128};
-    let mut position = 0usize;
-    while position + 16 <= destination.len() {
-        let start = position % pattern_length;
-        unsafe {
-            let chunk = _mm_loadu_si128(tile.as_ptr().add(start) as *const __m128i);
-            _mm_storeu_si128(
-                destination.as_mut_ptr().add(position) as *mut __m128i,
-                chunk,
-            );
-        }
-        position += 16;
-    }
-    if position < destination.len() {
-        fill_pattern_scalar(tile, pattern_length, &mut destination[position..], position);
     }
 }
 
@@ -181,20 +91,32 @@ unsafe fn copy_bytes_simd128(source: *const u8, destination: *mut u8, length: us
     }
 }
 
-#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
-fn fill_pattern_simd128(tile: &[u8; TILE_LENGTH], pattern_length: usize, destination: &mut [u8]) {
-    use core::arch::wasm32::{v128, v128_load, v128_store};
-    let mut position = 0usize;
-    while position + 16 <= destination.len() {
-        let start = position % pattern_length;
+pub(crate) unsafe fn copy_match_overshoot_unchecked(
+    destination: *mut u8,
+    offset: usize,
+    length: usize,
+) {
+    let mut written = 0usize;
+    let mut step = offset;
+    while step < 16 && written < length {
         unsafe {
-            let chunk = v128_load(tile.as_ptr().add(start) as *const v128);
-            v128_store(destination.as_mut_ptr().add(position) as *mut v128, chunk);
+            copy_bytes_overshoot_unchecked(
+                destination.add(written).sub(step),
+                destination.add(written),
+                16,
+            );
         }
-        position += 16;
+        written += step;
+        step *= 2;
     }
-    if position < destination.len() {
-        fill_pattern_scalar(tile, pattern_length, &mut destination[position..], position);
+    if written < length {
+        unsafe {
+            copy_bytes_overshoot_unchecked(
+                destination.add(written).sub(step),
+                destination.add(written),
+                length - written,
+            );
+        }
     }
 }
 
@@ -308,12 +230,14 @@ pub fn run_self_tests() -> Option<u32> {
         length_index += 1;
     }
 
-    let pattern = [1u8, 2, 3, 4, 5, 6, 7, 8];
-    let mut destination = [0u8; 64];
-    fill_pattern(&pattern, &mut destination);
+    let mut pattern = [0u8; 96];
+    pattern[..3].copy_from_slice(&[1, 2, 3]);
+    unsafe {
+        copy_match_overshoot_unchecked(pattern.as_mut_ptr().add(3), 3, 61);
+    }
     let mut check_index = 0usize;
-    while check_index < destination.len() {
-        if destination[check_index] != pattern[check_index % pattern.len()] {
+    while check_index < 64 {
+        if pattern[check_index] != (check_index % 3) as u8 + 1 {
             return Some(2);
         }
         check_index += 1;
@@ -430,36 +354,6 @@ mod tests {
     }
 
     #[test]
-    fn fill_pattern_repeats_over_destination() {
-        for pattern_length in 1..=32usize {
-            let pattern = random_vec(pattern_length, 0x0f0f_1111 + pattern_length as u32);
-            for destination_length in 0..=100usize {
-                let mut destination = std::vec![0xffu8; destination_length];
-                fill_pattern(&pattern, &mut destination);
-                for index in 0..destination_length {
-                    assert_eq!(destination[index], pattern[index % pattern_length]);
-                }
-            }
-        }
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    #[test]
-    fn fill_pattern_neon_matches_scalar() {
-        for pattern_length in 1..=32usize {
-            let pattern = random_vec(pattern_length, 0x2222_0000 + pattern_length as u32);
-            let tile = build_tile(&pattern);
-            for destination_length in 0..=100usize {
-                let mut expected = std::vec![0u8; destination_length];
-                let mut actual = std::vec![0u8; destination_length];
-                fill_pattern_scalar(&tile, pattern_length, &mut expected, 0);
-                fill_pattern_neon(&tile, pattern_length, &mut actual);
-                assert_eq!(expected, actual);
-            }
-        }
-    }
-
-    #[test]
     fn copy_bytes_overshoot_unchecked_matches_scalar_within_length() {
         for &length in LENGTHS.iter() {
             if length == 0 || length > 65536 {
@@ -480,30 +374,16 @@ mod tests {
     }
 
     #[test]
-    fn copy_bytes_overshoot_unchecked_repeats_a_pattern_through_overlap() {
-        let overshoot_room = 32usize;
-        for offset in 1..=32usize {
-            let mut local = std::vec![0u8; offset + 300 + overshoot_room];
-            for slot in local[..offset].iter_mut() {
-                *slot = b'a';
-            }
-            let mut pattern = [0u8; 16];
-            fill_pattern(&local[..offset], &mut pattern);
-
-            let mut written = 0usize;
-            let base = local.as_mut_ptr();
-            while written < 300 {
+    fn copy_match_overshoot_unchecked_repeats_every_short_offset() {
+        for offset in 1..=40usize {
+            for length in 1..=100usize {
+                let mut output = random_vec(offset + length + 32, offset as u32 * 7 + 1);
                 unsafe {
-                    copy_bytes_overshoot_unchecked(
-                        pattern.as_ptr(),
-                        base.add(offset + written),
-                        16,
-                    );
+                    copy_match_overshoot_unchecked(output.as_mut_ptr().add(offset), offset, length);
                 }
-                written += 16;
-            }
-            for index in 0..300 {
-                assert_eq!(local[offset + index], b'a');
+                for index in 0..length {
+                    assert_eq!(output[offset + index], output[index % offset]);
+                }
             }
         }
     }

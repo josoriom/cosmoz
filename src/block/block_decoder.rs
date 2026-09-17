@@ -14,10 +14,10 @@ use crate::{
         block_header::{BlockHeader, BlockType, MAX_BLOCK_SIZE},
         frame_header::FrameFormat,
     },
-    simd::copy_bytes::{copy_bytes, copy_bytes_overshoot_unchecked, fill_pattern},
+    simd::copy_bytes::{copy_bytes, copy_match_overshoot_unchecked},
 };
 
-const FAST_PATH_SLACK: usize = 32;
+pub(crate) const FAST_PATH_SLACK: usize = 32;
 const LITERALS_BUFFER_LENGTH: usize = MAX_BLOCK_SIZE + FAST_PATH_SLACK;
 
 /// The fast path copies literals in whole 16-byte vectors, so it may read up to 15 bytes
@@ -267,10 +267,7 @@ fn decode_sequences_section(
     let mut position = output_position;
     let mut literal_cursor = 0usize;
 
-    let fast_path_available =
-        output.len() >= output_position + MAX_BLOCK_SIZE + FAST_PATH_SLACK && bitstream.len() >= 8;
-
-    if fast_path_available {
+    if bitstream.len() >= 8 {
         let literals_bytes = match literal_source {
             LiteralSource::Raw(bytes) => {
                 if raw_literals_have_read_slack(input.len(), literals_bytes_used) {
@@ -443,7 +440,7 @@ fn copy_literals(
     Ok(new_position)
 }
 
-fn copy_match(
+pub(crate) fn copy_match(
     output: &mut [u8],
     output_position: usize,
     offset: usize,
@@ -462,16 +459,11 @@ fn copy_match(
     let source_start = output_position - offset;
 
     if output.len() - new_position >= FAST_PATH_SLACK {
-        if offset >= 16 {
-            unsafe {
-                copy_match_unchecked(output, output_position, source_start, length);
-            }
-        } else {
-            let mut pattern_bytes = [0u8; 16];
-            pattern_bytes[..offset].copy_from_slice(&output[source_start..output_position]);
-            fill_pattern(
-                &pattern_bytes[..offset],
-                &mut output[output_position..new_position],
+        unsafe {
+            copy_match_overshoot_unchecked(
+                output.as_mut_ptr().add(output_position),
+                offset,
+                length,
             );
         }
         return Ok(new_position);
@@ -494,24 +486,6 @@ fn copy_match(
     }
 
     Ok(new_position)
-}
-
-unsafe fn copy_match_unchecked(
-    output: &mut [u8],
-    output_position: usize,
-    source_start: usize,
-    length: usize,
-) {
-    let base = output.as_mut_ptr();
-    let mut written = 0usize;
-    while written < length {
-        unsafe {
-            let source_pointer = base.add(source_start + written) as *const u8;
-            let destination_pointer = base.add(output_position + written);
-            copy_bytes_overshoot_unchecked(source_pointer, destination_pointer, 16);
-        }
-        written += 16;
-    }
 }
 
 #[cfg(test)]
@@ -829,6 +803,39 @@ The quick brown fox jumps over the lazy dog. "
             let decoded_length = decompress(&frame, &mut decoded, &mut decode_workspace).unwrap();
             assert_eq!(decoded_length, input.len(), "trial {trial}");
             assert_eq!(&decoded[..decoded_length], &input[..], "trial {trial}");
+        }
+    }
+
+    #[test]
+    fn round_trips_into_exact_size_output() {
+        use crate::{
+            decoder::{DecodeWorkspace, decompress},
+            encoder::{CompressOptions, EncodeWorkspace, compress, get_max_compressed_size},
+        };
+
+        let mut encode_workspace = EncodeWorkspace::new_boxed();
+        let mut decode_workspace = DecodeWorkspace::new_boxed();
+        for options in [CompressOptions::zstd(), CompressOptions::cosmoz()] {
+            for length in (1..400usize).chain([4096, 70_000, 200_000]) {
+                let mut input = xorshift_bytes(length, length as u32);
+                for index in 0..length {
+                    if index % 7 != 0 && index >= 1 + length % 5 {
+                        input[index] = input[index - 1 - length % 5];
+                    }
+                }
+                let mut compressed = std::vec![0u8; get_max_compressed_size(length, &options)];
+                let compressed_length =
+                    compress(&input, &mut compressed, &options, &mut encode_workspace).unwrap();
+                let mut decoded = std::vec![0u8; length];
+                let decoded_length = decompress(
+                    &compressed[..compressed_length],
+                    &mut decoded,
+                    &mut decode_workspace,
+                )
+                .unwrap();
+                assert_eq!(decoded_length, length);
+                assert_eq!(decoded, input, "length {length}");
+            }
         }
     }
 

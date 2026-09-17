@@ -1,48 +1,85 @@
 # cosmoz
 
-Pure Rust compressor and decompressor.
+Pure Rust zstd compressor and decompressor. Zero dependencies, `no_std` core, same code on native and wasm32.
 
-## Features
+## Install
 
-- `alloc`: boxed workspaces, `new_boxed_for_level`.
-- `std`: implies `alloc`; needed by any std consumer on wasm32.
-- `parallel`: implies `std`; threads over chunks.
-- `wasm-exports`: standalone browser module with C exports and its own panic handler; never enable it when linking cosmoz into another crate.
-- `levels` (on by default): compression levels 9 and 12 and block splitting; without it only level 1 compiles.
-- `checksum` (on by default): xxhash64/xxhash3 and checksum verification; without it `with_checksum: true` is rejected and the decoder skips verification.
-- `encoder` (on by default): the whole encoder; without it the crate is decoder-only.
+```bash
+cargo add cosmoz --features std
+```
 
-## Benchmarks
+Features:
 
-Apple M4. Input split into 4 MB pieces, one frame per piece. Native: single thread, levels 1 and 9. Browser: level 1, pieces spread over the threads. All outputs verified byte for byte against the input.
+| Feature | Default | Enables |
+|---|---|---|
+| `encoder` | yes | Compression. Without it the crate only decodes. |
+| `levels` | yes | Levels 9, 12 and 22 (9–22 also need `alloc`). Without it only level 1. |
+| `checksum` | yes | Frame checksums and their verification. |
+| `alloc` | no | Heap workspaces (`new_boxed`, `new_boxed_for_level`) and `StreamEncoder`. |
+| `std` | no | `alloc` plus `StreamWriter` (`std::io::Write`). |
 
+## Usage
 
-Files: `iron` is a 154 MB mass spectrometry mzML. `pwiz` is a 5.1 MB mzML.
+Compression levels: `1`, `9`, `12`, `22`.
 
-### Native
+`CompressOptions::default()`: zstd frame, level 12, checksum on.
 
-| File | Codec | Size L1 | Size L9 | Compress L1 MB/s | Compress L9 MB/s | Decompress L1 MB/s | Decompress L9 MB/s |
-|---|---|---|---|---|---|---|---|
-| iron | libzstd | 89,883,484 | 89,184,642 | 1530 ± 37 (10) | 488 ± 23 (10) | 1756 ± 24 (10) | 1744 ± 20 (10) |
-| iron | ruzstd | 99,249,254 | — | 104 ± 0 (10) | — | 332 ± 1 (10) | — |
-| iron | cosmoz/zstd | 90,352,433 | 89,047,245 | 1183 ± 13 (10) | 563 ± 6 (10) | 2176 ± 13 (10) | 2102 ± 14 (10) |
-| iron | cosmoz/cosmoz | 90,371,391 | 89,074,910 | 1181 ± 12 (10) | 526 ± 39 (10) | 2149 ± 15 (10) | 2103 ± 27 (10) |
-| pwiz | libzstd | 2,788,540 | 1,883,317 | 903 ± 11 (10) | 141 ± 5 (10) | 1343 ± 20 (10) | 1699 ± 50 (10) |
-| pwiz | ruzstd | 3,151,638 | — | 98 ± 1 (10) | — | 332 ± 3 (10) | — |
-| pwiz | cosmoz/zstd | 2,356,719 | 1,885,497 | 615 ± 6 (10) | 146 ± 4 (10) | 1543 ± 53 (10) | 1587 ± 32 (10) |
-| pwiz | cosmoz/cosmoz | 2,357,306 | 1,887,198 | 622 ± 12 (10) | 154 ± 2 (10) | 1629 ± 47 (10) | 1672 ± 48 (10) |
+Frame formats (`CompressOptions::format`):
 
-### Browser engine (wasm, Node workers)
+- `CompressFormat::Zstd`: standard zstd frame, readable by any zstd decoder. `CompressOptions::zstd()`.
 
-Threads are Web Workers. Each piece is copied to a worker and back, which is included in the time. cosmoz and ruzstd are built for wasm32 with `+simd128` and `+bulk-memory` (`www/build.sh`); libzstd is the published Emscripten build.
+### Compress
 
-| File | Codec | Size L1 | Size L9 | Compress L1 MB/s | Compress L9 MB/s | Decompress L1 MB/s | Decompress L9 MB/s |
-|---|---|---|---|---|---|---|---|
-| iron | libzstd | 89,883,484 | 89,184,642 | 830 ± 25 (10) | 292 ± 9 (10) | 917 ± 5 (10) | 901 ± 19 (10) |
-| iron | ruzstd | 99,249,254 | — | 97 ± 2 (10) | — | 253 ± 12 (10) | — |
-| iron | cosmoz/zstd | 90,352,433 | 89,047,245 | 797 ± 20 (10) | 357 ± 13 (10) | 967 ± 20 (10) | 999 ± 5 (10) |
-| iron | cosmoz/cosmoz | 90,371,391 | 89,074,910 | 803 ± 8 (10) | 358 ± 9 (10) | 964 ± 11 (10) | 977 ± 12 (10) |
-| pwiz | libzstd | 2,788,540 | 1,883,317 | 467 ± 20 (10) | 97 ± 1 (10) | 746 ± 14 (10) | 996 ± 43 (10) |
-| pwiz | ruzstd | 3,151,638 | — | 90 ± 1 (10) | — | 243 ± 3 (10) | — |
-| pwiz | cosmoz/zstd | 2,356,719 | 1,885,497 | 461 ± 12 (10) | 98 ± 1 (10) | 901 ± 41 (10) | 988 ± 54 (10) |
-| pwiz | cosmoz/cosmoz | 2,357,306 | 1,887,198 | 471 ± 13 (10) | 97 ± 1 (10) | 869 ± 38 (10) | 940 ± 54 (10) |
+```rust
+use cosmoz::{CompressOptions, EncodeWorkspace, compress, get_max_compressed_size};
+
+let input = std::fs::read("data.mzML").unwrap();
+
+let options = CompressOptions {
+    level: 12,
+    ..Default::default()
+};
+
+let mut workspace = EncodeWorkspace::new_boxed_for_level(options.level).unwrap();
+let mut frame = vec![0u8; get_max_compressed_size(input.len(), &options)];
+let written = compress(&input, &mut frame, &options, &mut workspace).unwrap();
+frame.truncate(written);
+```
+
+Reuse the workspace for the next input at the same level. Creating it allocates the match tables.
+
+### Decompress
+
+```rust
+use cosmoz::{DecodeWorkspace, decompress, get_decompressed_size};
+
+let content_size = get_decompressed_size(&frame).unwrap().expect("frame has no content size");
+
+let mut workspace = DecodeWorkspace::new_boxed();
+let mut output = vec![0u8; content_size as usize];
+let written = decompress(&frame, &mut output, &mut workspace).unwrap();
+assert_eq!(written, output.len());
+```
+
+`decompress` reads zstd and cosmoz frames, and several concatenated frames. The output buffer must be large enough for the whole content.
+
+### Stream
+
+```rust
+use std::io::Write;
+use cosmoz::StreamWriter;
+
+let file = std::fs::File::create("data.mzML.zst").unwrap();
+let mut writer = StreamWriter::new(file, 12).unwrap();
+writer.write_all(b"first part").unwrap();
+writer.write_all(b"second part").unwrap();
+let file = writer.finish().unwrap();
+```
+
+`StreamWriter` writes one zstd frame without a content size. Call `finish` to write the last block; dropping the writer without it leaves an incomplete frame. Without `std`, use `StreamEncoder::write` and `StreamEncoder::finish` with a `Vec<u8>` output.
+
+### `no_std` without `alloc`
+
+Only level 1. `EncodeWorkspace::new()` and `DecodeWorkspace::new()` are `const`, so the workspaces can live in a `static`.
+
+Benchmarks: [BENCH.md](BENCH.md).

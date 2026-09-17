@@ -1,5 +1,7 @@
 pub mod block_decoder;
 pub mod block_decoder_fast;
+#[cfg(all(feature = "encoder", feature = "levels", feature = "alloc"))]
+pub mod block_presplitter;
 #[cfg(all(feature = "alloc", feature = "levels"))]
 pub mod block_splitter;
 #[cfg(feature = "encoder")]

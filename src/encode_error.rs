@@ -4,4 +4,5 @@ pub enum EncodeError {
     InputTooLarge,
     BadOptions,
     TableNotUsable,
+    OutOfMemory,
 }

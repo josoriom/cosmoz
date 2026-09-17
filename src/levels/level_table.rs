@@ -2,6 +2,8 @@
 pub enum Strategy {
     Fast,
     Lazy2,
+    #[cfg(all(feature = "levels", feature = "alloc"))]
+    Ultra2,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -15,7 +17,9 @@ pub struct LevelParameters {
     pub strategy: Strategy,
 }
 
-#[cfg(feature = "levels")]
+#[cfg(all(feature = "levels", feature = "alloc"))]
+pub const SUPPORTED_LEVELS: [u8; 4] = [1, 9, 12, 22];
+#[cfg(all(feature = "levels", not(feature = "alloc")))]
 pub const SUPPORTED_LEVELS: [u8; 3] = [1, 9, 12];
 #[cfg(not(feature = "levels"))]
 pub const SUPPORTED_LEVELS: [u8; 1] = [1];
@@ -59,6 +63,54 @@ const fn level_twelve_parameters() -> LevelParameters {
     }
 }
 
+#[cfg(all(feature = "levels", feature = "alloc"))]
+const fn level_twenty_two_parameters() -> LevelParameters {
+    LevelParameters {
+        window_log: 27,
+        chain_log: 27,
+        hash_log: 25,
+        search_log: 9,
+        min_match: 3,
+        target_length: 999,
+        strategy: Strategy::Ultra2,
+    }
+}
+
+#[cfg(all(feature = "levels", feature = "alloc"))]
+const fn level_twenty_two_parameters_for_input_length(input_length: usize) -> LevelParameters {
+    let (window_log, chain_log, hash_log, search_log) = if input_length <= SMALL_INPUT_LENGTH {
+        (14, 15, 15, 10)
+    } else if input_length <= MEDIUM_INPUT_LENGTH {
+        (17, 18, 17, 11)
+    } else if input_length <= LARGE_INPUT_LENGTH {
+        (18, 19, 19, 13)
+    } else {
+        return level_twenty_two_parameters();
+    };
+    LevelParameters {
+        window_log,
+        chain_log,
+        hash_log,
+        search_log,
+        min_match: 3,
+        target_length: 999,
+        strategy: Strategy::Ultra2,
+    }
+}
+
+#[cfg(all(feature = "levels", feature = "alloc"))]
+const SMALL_INPUT_LENGTH: usize = 16 * 1024;
+#[cfg(all(feature = "levels", feature = "alloc"))]
+const MEDIUM_INPUT_LENGTH: usize = 128 * 1024;
+#[cfg(all(feature = "levels", feature = "alloc"))]
+const LARGE_INPUT_LENGTH: usize = 256 * 1024;
+#[cfg(all(feature = "levels", feature = "alloc"))]
+const MIN_HASH_LOG: u8 = 6;
+#[cfg(all(feature = "levels", feature = "alloc"))]
+const MIN_WINDOW_LOG: u8 = 10;
+#[cfg(all(feature = "levels", feature = "alloc"))]
+const MAX_RESIZED_INPUT_LENGTH: usize = 1 << 30;
+
 pub const fn get_level_parameters(level: u8) -> Option<LevelParameters> {
     match level {
         1 => Some(level_one_parameters()),
@@ -66,8 +118,48 @@ pub const fn get_level_parameters(level: u8) -> Option<LevelParameters> {
         9 => Some(level_nine_parameters()),
         #[cfg(feature = "levels")]
         12 => Some(level_twelve_parameters()),
+        #[cfg(all(feature = "levels", feature = "alloc"))]
+        22 => Some(level_twenty_two_parameters()),
         _ => None,
     }
+}
+
+#[cfg(all(feature = "levels", feature = "alloc"))]
+pub fn get_level_parameters_for_input_length(
+    level: u8,
+    input_length: usize,
+) -> Option<LevelParameters> {
+    let parameters = match level {
+        22 => level_twenty_two_parameters_for_input_length(input_length),
+        _ => get_level_parameters(level)?,
+    };
+    Some(shrink_parameters_to_input_length(parameters, input_length))
+}
+
+#[cfg(all(feature = "levels", feature = "alloc"))]
+fn shrink_parameters_to_input_length(
+    parameters: LevelParameters,
+    input_length: usize,
+) -> LevelParameters {
+    let mut shrunk = parameters;
+    if input_length <= MAX_RESIZED_INPUT_LENGTH {
+        let input_log = if input_length < 1 << MIN_HASH_LOG {
+            MIN_HASH_LOG
+        } else {
+            (usize::BITS - (input_length - 1).leading_zeros()) as u8
+        };
+        shrunk.window_log = shrunk.window_log.min(input_log);
+    }
+    shrunk.hash_log = shrunk.hash_log.min(shrunk.window_log + 1);
+    let cycle_log = match shrunk.strategy {
+        Strategy::Ultra2 => shrunk.chain_log - 1,
+        Strategy::Fast | Strategy::Lazy2 => shrunk.chain_log,
+    };
+    if cycle_log > shrunk.window_log {
+        shrunk.chain_log -= cycle_log - shrunk.window_log;
+    }
+    shrunk.window_log = shrunk.window_log.max(MIN_WINDOW_LOG);
+    shrunk
 }
 
 #[cfg(test)]
@@ -105,6 +197,20 @@ mod tests {
         assert_eq!(parameters.min_match, 5);
         assert_eq!(parameters.target_length, 32);
         assert_eq!(parameters.strategy, Strategy::Lazy2);
+    }
+
+    #[cfg(all(feature = "levels", feature = "alloc"))]
+    #[test]
+    fn level_twenty_two_shrinks_like_libzstd_for_a_five_megabyte_input() {
+        let parameters = get_level_parameters_for_input_length(22, 5_103_183).unwrap();
+        assert_eq!(parameters.window_log, 23);
+        assert_eq!(parameters.hash_log, 24);
+        assert_eq!(parameters.chain_log, 24);
+        assert_eq!(parameters.search_log, 9);
+        assert_eq!(parameters.strategy, Strategy::Ultra2);
+        let small = get_level_parameters_for_input_length(22, 100 * 1024).unwrap();
+        assert_eq!(small.window_log, 17);
+        assert_eq!(small.search_log, 11);
     }
 
     #[test]

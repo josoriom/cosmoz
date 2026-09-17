@@ -16,7 +16,8 @@ use crate::{
 use crate::{
     encode_error::EncodeError,
     encoder::{
-        CompressOptions, EncodeWorkspace, compress, compress_chunk, get_max_compressed_size,
+        CompressFormat, CompressOptions, EncodeWorkspace, compress, compress_chunk,
+        get_max_compressed_size,
     },
     frame::chunk_index::ChunkEntry,
     frame::frame_writer::{write_checksum, write_chunk_index, write_frame_header},
@@ -39,7 +40,7 @@ impl<T> SingleThreadCell<T> {
     }
 }
 
-const HEAP_SIZE: usize = 16 * 1024 * 1024;
+const PAGE_SIZE: usize = 64 * 1024;
 const HEAP_ALIGNMENT: usize = 8;
 
 static WORKSPACE: SingleThreadCell<DecodeWorkspace> = SingleThreadCell::new(DecodeWorkspace::new());
@@ -48,8 +49,9 @@ static ENCODE_WORKSPACE: SingleThreadCell<EncodeWorkspace> =
     SingleThreadCell::new(EncodeWorkspace::zeroed());
 #[cfg(feature = "encoder")]
 static ENCODE_WORKSPACE_READY: SingleThreadCell<bool> = SingleThreadCell::new(false);
-static HEAP: SingleThreadCell<[u8; HEAP_SIZE]> = SingleThreadCell::new([0u8; HEAP_SIZE]);
+static HEAP_START: SingleThreadCell<usize> = SingleThreadCell::new(0);
 static HEAP_USED: SingleThreadCell<usize> = SingleThreadCell::new(0);
+static HEAP_END: SingleThreadCell<usize> = SingleThreadCell::new(0);
 
 fn get_workspace() -> &'static mut DecodeWorkspace {
     unsafe { &mut *WORKSPACE.0.get() }
@@ -66,8 +68,16 @@ fn get_encode_workspace() -> &'static mut EncodeWorkspace {
     workspace
 }
 
-fn get_heap() -> &'static mut [u8; HEAP_SIZE] {
-    unsafe { &mut *HEAP.0.get() }
+fn get_heap_start() -> &'static mut usize {
+    unsafe { &mut *HEAP_START.0.get() }
+}
+
+fn get_heap_end() -> &'static mut usize {
+    unsafe { &mut *HEAP_END.0.get() }
+}
+
+fn get_memory_end() -> usize {
+    core::arch::wasm32::memory_size(0) * PAGE_SIZE
 }
 
 fn get_heap_used() -> &'static mut usize {
@@ -81,37 +91,44 @@ fn align_up(value: usize, alignment: usize) -> usize {
 #[unsafe(no_mangle)]
 pub extern "C" fn cosmoz_allocate(length: usize) -> *mut u8 {
     let heap_used = get_heap_used();
-    let aligned_start = align_up(*heap_used, HEAP_ALIGNMENT);
-    let end = match aligned_start.checked_add(length) {
+    let heap_end = get_heap_end();
+    let mut start = align_up(*heap_used, HEAP_ALIGNMENT);
+    let mut end = match start.checked_add(length) {
         Some(end) => end,
         None => return core::ptr::null_mut(),
     };
-    if end > HEAP_SIZE {
-        return core::ptr::null_mut();
+    if *heap_end == 0 || end > *heap_end {
+        let memory_end = get_memory_end();
+        if *heap_end != memory_end {
+            start = memory_end;
+            end = match start.checked_add(length) {
+                Some(end) => end,
+                None => return core::ptr::null_mut(),
+            };
+            *get_heap_start() = start;
+        }
+        let pages = (end - memory_end).div_ceil(PAGE_SIZE);
+        if core::arch::wasm32::memory_grow(0, pages) == usize::MAX {
+            return core::ptr::null_mut();
+        }
+        *heap_end = memory_end + pages * PAGE_SIZE;
     }
     *heap_used = end;
-    let heap = get_heap();
-    unsafe { heap.as_mut_ptr().add(aligned_start) }
+    start as *mut u8
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn cosmoz_free(pointer: *mut u8, length: usize) {
     let heap_used = get_heap_used();
-    let base = get_heap().as_mut_ptr() as usize;
     let block_start = pointer as usize;
-    if block_start < base {
-        return;
-    }
-    let block_offset = block_start - base;
-    if block_offset + length == *heap_used {
-        *heap_used = block_offset;
+    if block_start >= *get_heap_start() && block_start + length == *heap_used {
+        *heap_used = block_start;
     }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn cosmoz_reset_heap() {
-    let heap_used = get_heap_used();
-    *heap_used = 0;
+    *get_heap_used() = *get_heap_start();
 }
 
 unsafe fn slice_from_raw_parts_checked<'a>(pointer: *const u8, length: usize) -> Option<&'a [u8]> {
@@ -186,10 +203,12 @@ pub unsafe extern "C" fn cosmoz_decompress(
 }
 
 #[cfg(feature = "encoder")]
-fn frame_format_from_u32(format: u32) -> Option<FrameFormat> {
+fn compress_format_from_u32(format: u32) -> Option<CompressFormat> {
     match format {
-        0 => Some(FrameFormat::Zstd),
-        1 => Some(FrameFormat::Cosmoz),
+        0 => Some(CompressFormat::Zstd),
+        1 => Some(CompressFormat::Cosmoz {
+            chunk_size: crate::encoder::DEFAULT_CHUNK_SIZE,
+        }),
         _ => None,
     }
 }
@@ -202,14 +221,13 @@ fn encode_error_to_error_code(error: EncodeError) -> i64 {
 #[cfg(feature = "encoder")]
 #[unsafe(no_mangle)]
 pub extern "C" fn cosmoz_get_max_compressed_size(input_length: usize, format: u32) -> i64 {
-    let frame_format = match frame_format_from_u32(format) {
+    let frame_format = match compress_format_from_u32(format) {
         Some(frame_format) => frame_format,
         None => return encode_error_to_error_code(EncodeError::BadOptions),
     };
     let options = CompressOptions {
         format: frame_format,
         with_checksum: true,
-        chunk_size: crate::encoder::DEFAULT_CHUNK_SIZE,
         level: 1,
     };
     get_max_compressed_size(input_length, &options) as i64
@@ -226,7 +244,7 @@ pub unsafe extern "C" fn cosmoz_compress(
     format: u32,
     with_checksum: u32,
 ) -> i64 {
-    let frame_format = match frame_format_from_u32(format) {
+    let frame_format = match compress_format_from_u32(format) {
         Some(frame_format) => frame_format,
         None => return encode_error_to_error_code(EncodeError::BadOptions),
     };
@@ -241,7 +259,6 @@ pub unsafe extern "C" fn cosmoz_compress(
     let options = CompressOptions {
         format: frame_format,
         with_checksum: with_checksum != 0,
-        chunk_size: crate::encoder::DEFAULT_CHUNK_SIZE,
         level: 1,
     };
     let workspace = get_encode_workspace();
@@ -399,7 +416,7 @@ pub unsafe extern "C" fn cosmoz_compress_chunk(
         None => return encode_error_to_error_code(EncodeError::OutputTooSmall),
     };
     let workspace = get_encode_workspace();
-    workspace.match_finder.reset();
+    workspace.match_finder.reset(input.len());
     workspace.repeat_offsets = RepeatOffsets::new();
     match compress_chunk(input, FrameFormat::Cosmoz, output, workspace) {
         Ok(bytes_written) => bytes_written as i64,
@@ -425,7 +442,7 @@ pub unsafe extern "C" fn cosmoz_write_frame_header(
     match write_frame_header(
         output,
         FrameFormat::Cosmoz,
-        content_size,
+        Some(content_size),
         WASM_WINDOW_LOG,
         with_checksum != 0,
     ) {

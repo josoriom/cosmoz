@@ -264,6 +264,11 @@ fn write_block_as_split_pieces(
             Ok(length) if length < piece_bytes.len() => length,
             _ => return Ok(None),
         };
+        let consumed_length = content_position + piece_byte_length;
+        let header_length = crate::frame::block_header::BLOCK_HEADER_LENGTH;
+        if output_position + header_length + body_length > consumed_length + header_length {
+            return Ok(None);
+        }
 
         let header_length = write_block_header(
             output

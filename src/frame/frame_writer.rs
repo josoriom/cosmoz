@@ -4,7 +4,7 @@ use crate::{
         block_header::{BLOCK_HEADER_LENGTH, BlockType, MAX_BLOCK_SIZE},
         chunk_index::{CHUNK_COUNT_LENGTH, CHUNK_ENTRY_LENGTH, ChunkEntry},
         frame_header::{
-            FrameFormat, COSMOZ_CHECKSUM_LENGTH, COSMOZ_MAGIC_NUMBER, ZSTD_CHECKSUM_LENGTH,
+            COSMOZ_CHECKSUM_LENGTH, COSMOZ_MAGIC_NUMBER, FrameFormat, ZSTD_CHECKSUM_LENGTH,
             ZSTD_MAGIC_NUMBER,
         },
     },
@@ -15,7 +15,7 @@ pub const MAX_FRAME_HEADER_LENGTH: usize = 14;
 pub fn write_frame_header(
     output: &mut [u8],
     format: FrameFormat,
-    content_size: u64,
+    content_size: Option<u64>,
     window_log: u8,
     with_checksum: bool,
 ) -> Result<usize, EncodeError> {
@@ -23,8 +23,9 @@ pub fn write_frame_header(
         return Err(EncodeError::BadOptions);
     }
 
-    let content_size_flag = get_content_size_flag(content_size);
-    let content_size_length = get_content_size_field_length(content_size_flag);
+    let content_size_flag = content_size.map_or(0, get_content_size_flag);
+    let content_size_length =
+        content_size.map_or(0, |_| get_content_size_field_length(content_size_flag));
     let header_length = 4 + 1 + 1 + content_size_length;
 
     if output.len() < header_length {
@@ -42,6 +43,9 @@ pub fn write_frame_header(
 
     output[5] = write_window_descriptor(window_log);
 
+    let Some(content_size) = content_size else {
+        return Ok(header_length);
+    };
     let content_size_output = &mut output[6..6 + content_size_length];
     match content_size_flag {
         1 => {
@@ -211,7 +215,7 @@ mod tests {
                     let written = write_frame_header(
                         &mut output,
                         format,
-                        content_size,
+                        Some(content_size),
                         window_log,
                         with_checksum,
                     )
@@ -229,23 +233,37 @@ mod tests {
         }
 
         assert_eq!(max_written_length, MAX_FRAME_HEADER_LENGTH);
+
+        let mut output = [0u8; MAX_FRAME_HEADER_LENGTH];
+        let written =
+            write_frame_header(&mut output, FrameFormat::Zstd, None, window_log, true).unwrap();
+        let header = read_frame_header(&output[..written]).unwrap();
+        assert_eq!(header.content_size, None);
+        assert_eq!(header.window_size, 1u64 << window_log);
+        assert_eq!(header.header_length, written);
     }
 
     #[test]
     fn writers_reject_invalid_arguments() {
         let mut header_output = [0u8; MAX_FRAME_HEADER_LENGTH];
         assert_eq!(
-            write_frame_header(&mut header_output, FrameFormat::Zstd, 100, 9, true),
+            write_frame_header(&mut header_output, FrameFormat::Zstd, Some(100), 9, true),
             Err(EncodeError::BadOptions)
         );
         assert_eq!(
-            write_frame_header(&mut header_output, FrameFormat::Zstd, 100, 32, true),
+            write_frame_header(&mut header_output, FrameFormat::Zstd, Some(100), 32, true),
             Err(EncodeError::BadOptions)
         );
 
         let mut short_header_output = [0u8; 9];
         assert_eq!(
-            write_frame_header(&mut short_header_output, FrameFormat::Zstd, 100, 20, true),
+            write_frame_header(
+                &mut short_header_output,
+                FrameFormat::Zstd,
+                Some(100),
+                20,
+                true
+            ),
             Err(EncodeError::OutputTooSmall)
         );
 

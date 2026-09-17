@@ -290,6 +290,14 @@ fn skip_cosmoz_frame_body(input: &[u8], header: &FrameHeader) -> Result<usize, D
     Ok(position)
 }
 
+pub fn get_frame_compressed_size(input: &[u8]) -> Result<usize, DecodeError> {
+    if is_skippable_frame(input) {
+        return get_skippable_frame_length(input);
+    }
+    let header = read_frame_header(input)?;
+    skip_frame_body(input, &header)
+}
+
 pub fn get_decompressed_size(input: &[u8]) -> Result<Option<u64>, DecodeError> {
     let mut position = 0usize;
     let mut total_size = 0u64;

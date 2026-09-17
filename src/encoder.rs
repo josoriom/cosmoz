@@ -1,5 +1,5 @@
 #[cfg(not(feature = "alloc"))]
-use crate::algorithms::fast::{FastFinder, HASH_TABLE_SIZE};
+use crate::algorithms::fast::FastFinder;
 #[cfg(feature = "alloc")]
 use crate::block::sequences::TableMode;
 #[cfg(feature = "parallel")]
@@ -16,7 +16,7 @@ use crate::{
     frame::{
         block_header::{BLOCK_HEADER_LENGTH, MAX_BLOCK_SIZE},
         chunk_index::{CHUNK_COUNT_LENGTH, CHUNK_ENTRY_LENGTH},
-        frame_header::{FrameFormat, COSMOZ_CHECKSUM_LENGTH, ZSTD_CHECKSUM_LENGTH},
+        frame_header::{COSMOZ_CHECKSUM_LENGTH, FrameFormat, ZSTD_CHECKSUM_LENGTH},
         frame_writer::{MAX_FRAME_HEADER_LENGTH, write_frame_header},
     },
     levels::{
@@ -41,47 +41,66 @@ fn window_log_for_frame(format: FrameFormat, level_parameters: LevelParameters) 
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompressFormat {
+    Zstd,
+    Cosmoz { chunk_size: usize },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CompressOptions {
-    pub format: FrameFormat,
+    pub format: CompressFormat,
     pub with_checksum: bool,
-    pub chunk_size: usize,
     pub level: u8,
 }
 
 impl CompressOptions {
     pub const fn zstd() -> Self {
         Self {
-            format: FrameFormat::Zstd,
+            format: CompressFormat::Zstd,
             with_checksum: true,
-            chunk_size: 0,
             level: 1,
         }
     }
 
     pub const fn cosmoz() -> Self {
         Self {
-            format: FrameFormat::Cosmoz,
+            format: CompressFormat::Cosmoz {
+                chunk_size: DEFAULT_CHUNK_SIZE,
+            },
             with_checksum: true,
-            chunk_size: DEFAULT_CHUNK_SIZE,
             level: 1,
         }
     }
 }
 
+#[cfg(all(feature = "levels", feature = "alloc"))]
+pub const DEFAULT_COMPRESSION_LEVEL: u8 = 12;
+#[cfg(not(all(feature = "levels", feature = "alloc")))]
+pub const DEFAULT_COMPRESSION_LEVEL: u8 = 1;
+
+impl Default for CompressOptions {
+    fn default() -> Self {
+        Self {
+            level: DEFAULT_COMPRESSION_LEVEL,
+            ..Self::zstd()
+        }
+    }
+}
+
 pub struct EncodeWorkspace {
-    pub level: u8,
-    pub level_parameters: LevelParameters,
-    pub match_finder: AnyFinder<'static>,
+    pub(crate) level: u8,
+    pub(crate) level_parameters: LevelParameters,
+    pub(crate) match_finder: AnyFinder<'static>,
     #[cfg(feature = "alloc")]
-    pub table_memory: alloc::boxed::Box<[u32]>,
-    pub repeat_offsets: RepeatOffsets,
-    pub sequences: [SequenceRecord; MAX_SEQUENCES_PER_BLOCK],
-    pub literals: [u8; MAX_BLOCK_SIZE],
-    pub block_scratch: [u8; MAX_BLOCK_SIZE + 1024],
-    pub entropy_scratch: [u8; MAX_BLOCK_SIZE + 1024],
-    pub huffman_table: HuffmanEncodeTable,
-    pub weight_fse_table: FseEncodeTable,
-    pub sequence_tables: SequenceEncodeTables,
+    pub(crate) table_memory: alloc::boxed::Box<[u32]>,
+    pub(crate) repeat_offsets: RepeatOffsets,
+    pub(crate) sequences: [SequenceRecord; MAX_SEQUENCES_PER_BLOCK],
+    pub(crate) literals: [u8; MAX_BLOCK_SIZE],
+    pub(crate) block_scratch: [u8; MAX_BLOCK_SIZE + 1024],
+    pub(crate) entropy_scratch: [u8; MAX_BLOCK_SIZE + 1024],
+    pub(crate) huffman_table: HuffmanEncodeTable,
+    pub(crate) weight_fse_table: FseEncodeTable,
+    pub(crate) sequence_tables: SequenceEncodeTables,
 }
 
 #[cfg(not(feature = "alloc"))]
@@ -123,10 +142,7 @@ impl EncodeWorkspace {
                 target_length: 0,
                 strategy: level_table::Strategy::Fast,
             },
-            match_finder: AnyFinder::Fast(FastFinder {
-                positions: [0; HASH_TABLE_SIZE],
-                window_log: 0,
-            }),
+            match_finder: AnyFinder::Fast(FastFinder::new(0)),
             repeat_offsets: RepeatOffsets {
                 first: 0,
                 second: 0,
@@ -235,19 +251,17 @@ pub(crate) unsafe fn write_initial_values_unchecked(
             level_parameters,
         );
 
+        let table_parameters = crate::levels::finder_tables::get_table_parameters_for_input(
+            level,
+            level_parameters,
+            0,
+        );
         let table_memory_length =
-            crate::levels::finder_tables::table_memory_length(level_parameters);
+            crate::levels::finder_tables::table_memory_length(table_parameters);
         let mut table_memory: alloc::boxed::Box<[u32]> =
             alloc::vec![0u32; table_memory_length].into_boxed_slice();
-
-        let table_memory_ptr = table_memory.as_mut_ptr();
-        let table_memory_len = table_memory.len();
-        let borrowed_memory: &'static mut [u32] =
-            core::slice::from_raw_parts_mut(table_memory_ptr, table_memory_len);
-        let storage =
-            crate::levels::finder_tables::split_table_storage(borrowed_memory, level_parameters);
         let match_finder =
-            crate::levels::AnyFinder::for_level_with_storage(level_parameters, storage);
+            build_finder_over_tables(&mut table_memory, level, level_parameters, table_parameters);
 
         core::ptr::write(
             core::ptr::addr_of_mut!((*target).match_finder),
@@ -284,6 +298,52 @@ pub(crate) unsafe fn write_initial_values_unchecked(
     }
 }
 
+#[cfg(feature = "alloc")]
+fn build_finder_over_tables(
+    table_memory: &mut alloc::boxed::Box<[u32]>,
+    level: u8,
+    level_parameters: LevelParameters,
+    table_parameters: LevelParameters,
+) -> AnyFinder<'static> {
+    let borrowed_memory: &'static mut [u32] =
+        unsafe { core::slice::from_raw_parts_mut(table_memory.as_mut_ptr(), table_memory.len()) };
+    let storage =
+        crate::levels::finder_tables::split_table_storage(borrowed_memory, table_parameters);
+    AnyFinder::for_level_with_storage(level, level_parameters, storage)
+}
+
+#[cfg(feature = "alloc")]
+impl EncodeWorkspace {
+    pub(crate) fn prepare_tables_for_input(
+        &mut self,
+        input_length: usize,
+    ) -> Result<(), EncodeError> {
+        let table_parameters = crate::levels::finder_tables::get_table_parameters_for_input(
+            self.level,
+            self.level_parameters,
+            input_length,
+        );
+        let needed_length = crate::levels::finder_tables::table_memory_length(table_parameters);
+        if self.table_memory.len() >= needed_length {
+            return Ok(());
+        }
+        let mut memory = alloc::vec::Vec::new();
+        memory
+            .try_reserve_exact(needed_length)
+            .map_err(|_| EncodeError::OutOfMemory)?;
+        memory.resize(needed_length, 0u32);
+        let mut table_memory = memory.into_boxed_slice();
+        self.match_finder = build_finder_over_tables(
+            &mut table_memory,
+            self.level,
+            self.level_parameters,
+            table_parameters,
+        );
+        self.table_memory = table_memory;
+        Ok(())
+    }
+}
+
 #[cfg(all(test, feature = "alloc"))]
 mod new_boxed_tests {
     use super::*;
@@ -316,11 +376,11 @@ mod new_boxed_tests {
 
                 let boxed_finder = match &boxed_workspace.match_finder {
                     AnyFinder::Fast(finder) => finder,
-                    AnyFinder::Lazy2(_) => panic!("level 1 workspace must select Fast"),
+                    _ => panic!("level 1 workspace must select Fast"),
                 };
                 let stack_finder = match &stack_workspace.match_finder {
                     AnyFinder::Fast(finder) => finder,
-                    AnyFinder::Lazy2(_) => panic!("level 1 workspace must select Fast"),
+                    _ => panic!("level 1 workspace must select Fast"),
                 };
                 assert_eq!(boxed_finder.positions[0], stack_finder.positions[0]);
                 assert_eq!(
@@ -363,7 +423,10 @@ mod new_boxed_tests {
 }
 
 fn clamp_chunk_size(chunk_size: usize) -> usize {
-    chunk_size.clamp(1, MAX_CHUNK_SIZE)
+    if chunk_size == 0 {
+        return DEFAULT_CHUNK_SIZE;
+    }
+    chunk_size.min(MAX_CHUNK_SIZE)
 }
 
 fn window_size_for_log(window_log: u8) -> usize {
@@ -391,15 +454,15 @@ fn plan_cosmoz_chunking(input_length: usize, chunk_size: usize, window_log: u8) 
 pub fn get_max_compressed_size(input_length: usize, options: &CompressOptions) -> usize {
     let checksum_size = if options.with_checksum {
         match options.format {
-            FrameFormat::Zstd => ZSTD_CHECKSUM_LENGTH,
-            FrameFormat::Cosmoz => COSMOZ_CHECKSUM_LENGTH,
+            CompressFormat::Zstd => ZSTD_CHECKSUM_LENGTH,
+            CompressFormat::Cosmoz { .. } => COSMOZ_CHECKSUM_LENGTH,
         }
     } else {
         0
     };
 
     match options.format {
-        FrameFormat::Zstd => {
+        CompressFormat::Zstd => {
             let block_count = if input_length == 0 {
                 1
             } else {
@@ -408,8 +471,8 @@ pub fn get_max_compressed_size(input_length: usize, options: &CompressOptions) -
             let blocks_size = input_length + block_count * BLOCK_HEADER_LENGTH;
             MAX_FRAME_HEADER_LENGTH + blocks_size + checksum_size
         }
-        FrameFormat::Cosmoz => {
-            let chunk_size = clamp_chunk_size(options.chunk_size);
+        CompressFormat::Cosmoz { chunk_size } => {
+            let chunk_size = clamp_chunk_size(chunk_size);
             let chunk_count = if input_length == 0 {
                 1
             } else {
@@ -441,8 +504,10 @@ pub fn compress(
     }
 
     match options.format {
-        FrameFormat::Zstd => compress_zstd_frame(input, output, options, workspace),
-        FrameFormat::Cosmoz => compress_cosmoz_frame(input, output, options, workspace),
+        CompressFormat::Zstd => compress_zstd_frame(input, output, options, workspace),
+        CompressFormat::Cosmoz { chunk_size } => {
+            compress_cosmoz_frame(input, output, options, chunk_size, workspace)
+        }
     }
 }
 
@@ -452,16 +517,26 @@ fn compress_zstd_frame(
     options: &CompressOptions,
     workspace: &mut EncodeWorkspace,
 ) -> Result<usize, EncodeError> {
-    let window_log = window_log_for_frame(FrameFormat::Zstd, workspace.level_parameters);
+    #[cfg(feature = "alloc")]
+    let frame_parameters = crate::levels::finder_tables::get_table_parameters_for_input(
+        workspace.level,
+        workspace.level_parameters,
+        input.len(),
+    );
+    #[cfg(not(feature = "alloc"))]
+    let frame_parameters = workspace.level_parameters;
+    let window_log = window_log_for_frame(FrameFormat::Zstd, frame_parameters);
     let mut position = write_frame_header(
         output,
         FrameFormat::Zstd,
-        input.len() as u64,
+        Some(input.len() as u64),
         window_log,
         options.with_checksum,
     )?;
 
-    workspace.match_finder.reset();
+    #[cfg(feature = "alloc")]
+    workspace.prepare_tables_for_input(input.len())?;
+    workspace.match_finder.reset(input.len());
     workspace.repeat_offsets = RepeatOffsets::new();
 
     let blocks_output = output
@@ -485,16 +560,17 @@ fn compress_cosmoz_frame(
     input: &[u8],
     output: &mut [u8],
     options: &CompressOptions,
+    chunk_size: usize,
     workspace: &mut EncodeWorkspace,
 ) -> Result<usize, EncodeError> {
     let window_log = window_log_for_frame(FrameFormat::Cosmoz, workspace.level_parameters);
     let (chunk_size, chunk_count) =
-        plan_cosmoz_chunking(input.len(), options.chunk_size, window_log);
+        plan_cosmoz_chunking(input.len(), chunk_size, window_log);
 
     let header_length = write_frame_header(
         output,
         FrameFormat::Cosmoz,
-        input.len() as u64,
+        Some(input.len() as u64),
         window_log,
         options.with_checksum,
     )?;
@@ -535,6 +611,7 @@ fn compress_cosmoz_frame(
             let written = crate::parallel_encoder::compress_chunks_in_parallel(
                 input,
                 chunk_size,
+                workspace.level,
                 chunks_output,
                 &mut entries,
             )?;
@@ -555,6 +632,8 @@ fn compress_cosmoz_frame(
             position += written;
         }
     } else {
+        #[cfg(feature = "alloc")]
+        workspace.prepare_tables_for_input(chunk_size.min(input.len()))?;
         let mut chunk_start = 0usize;
         for chunk_number in 0..chunk_count {
             let chunk_end = if input.is_empty() {
@@ -564,7 +643,7 @@ fn compress_cosmoz_frame(
             };
             let chunk_content = &input[chunk_start..chunk_end];
 
-            workspace.match_finder.reset();
+            workspace.match_finder.reset(chunk_content.len());
             workspace.repeat_offsets = RepeatOffsets::new();
 
             let chunk_output = output
@@ -614,13 +693,16 @@ pub(crate) fn compress_chunk(
 
     let mut position = 0usize;
     let mut block_start = 0usize;
+    let mut savings = 0i64;
     while block_start < input.len() {
-        let block_end = (block_start + MAX_BLOCK_SIZE).min(input.len());
+        let block_length =
+            find_next_block_length(&input[block_start..], savings, workspace.level_parameters);
+        let block_end = block_start + block_length;
         let is_last = block_end == input.len();
         let block_output = output
             .get_mut(position..)
             .ok_or(EncodeError::OutputTooSmall)?;
-        position += write_block(
+        let written = write_block(
             &input[..block_end],
             block_start,
             format,
@@ -628,10 +710,37 @@ pub(crate) fn compress_chunk(
             block_output,
             workspace,
         )?;
+        savings += block_length as i64 - written as i64;
+        position += written;
         block_start = block_end;
     }
 
     Ok(position)
+}
+
+#[cfg(all(feature = "levels", feature = "alloc"))]
+pub(crate) fn find_next_block_length(
+    remaining: &[u8],
+    savings: i64,
+    level_parameters: LevelParameters,
+) -> usize {
+    match level_parameters.strategy {
+        level_table::Strategy::Ultra2 => {
+            crate::block::block_presplitter::find_block_length(remaining, savings)
+        }
+        level_table::Strategy::Fast | level_table::Strategy::Lazy2 => {
+            remaining.len().min(MAX_BLOCK_SIZE)
+        }
+    }
+}
+
+#[cfg(not(all(feature = "levels", feature = "alloc")))]
+pub(crate) fn find_next_block_length(
+    remaining: &[u8],
+    _savings: i64,
+    _level_parameters: LevelParameters,
+) -> usize {
+    remaining.len().min(MAX_BLOCK_SIZE)
 }
 
 #[cfg(test)]
@@ -727,9 +836,12 @@ mod tests {
     #[test]
     fn raw_cosmoz_frame_round_trips() {
         let text = build_deterministic_text(2 * 1024 * 1024 + 512 * 1024);
-        let mut options = CompressOptions::cosmoz();
-        options.chunk_size = 1024 * 1024;
-        let chunk_count = text.len().div_ceil(options.chunk_size);
+        let chunk_size = 1024 * 1024;
+        let options = CompressOptions {
+            format: CompressFormat::Cosmoz { chunk_size },
+            ..CompressOptions::cosmoz()
+        };
+        let chunk_count = text.len().div_ceil(chunk_size);
         assert_eq!(chunk_count, 3);
 
         let mut workspace = EncodeWorkspace::new_boxed();
@@ -836,12 +948,97 @@ mod tests {
         assert_eq!(xxhash64::hash_bytes(&output, 0), GOLDEN_LEVEL_ONE_HASH);
     }
 
+    #[cfg(feature = "levels")]
+    #[test]
+    fn default_options_write_a_level_twelve_zstd_frame() {
+        let options = CompressOptions {
+            with_checksum: false,
+            ..Default::default()
+        };
+        assert_eq!(options.format, CompressFormat::Zstd);
+        assert_eq!(options.level, 12);
+
+        let text = build_deterministic_text(200 * 1024);
+        let mut workspace = EncodeWorkspace::new_boxed_for_level(options.level).unwrap();
+        let mut output = vec![0u8; get_max_compressed_size(text.len(), &options)];
+        let written = compress(&text, &mut output, &options, &mut workspace).unwrap();
+        let header = crate::frame::frame_header::read_frame_header(&output[..written]).unwrap();
+        assert_eq!(header.format, FrameFormat::Zstd);
+        assert!(!header.has_checksum);
+
+        let mut decode_workspace = DecodeWorkspace::new_boxed();
+        let mut decoded = vec![0u8; text.len()];
+        decompress(&output[..written], &mut decoded, &mut decode_workspace).unwrap();
+        assert_eq!(decoded, text);
+    }
+
+    #[cfg(feature = "levels")]
+    #[test]
+    fn level_twenty_two_tables_grow_with_the_input_instead_of_the_level_maximum() {
+        let mut workspace = EncodeWorkspace::new_boxed_for_level(22).unwrap();
+        assert!(workspace.table_memory.len() < 1 << 20);
+
+        let text = build_deterministic_text(300 * 1024);
+        let mut options = CompressOptions::zstd();
+        options.level = 22;
+        let mut output = vec![0u8; get_max_compressed_size(text.len(), &options)];
+        let written = compress(&text, &mut output, &options, &mut workspace).unwrap();
+        let grown_length = workspace.table_memory.len();
+        let table_parameters =
+            level_table::get_level_parameters_for_input_length(22, text.len()).unwrap();
+        assert_eq!(
+            grown_length,
+            crate::levels::finder_tables::table_memory_length(table_parameters)
+        );
+        assert!(grown_length < 1 << 24);
+        let header = crate::frame::frame_header::read_frame_header(&output[..written]).unwrap();
+        assert_eq!(header.window_size, 1u64 << 19);
+
+        let mut decode_workspace = DecodeWorkspace::new_boxed();
+        let mut decoded = vec![0u8; text.len()];
+        decompress(&output[..written], &mut decoded, &mut decode_workspace).unwrap();
+        assert_eq!(decoded, text);
+
+        let small_text = build_deterministic_text(20 * 1024);
+        let small_written = compress(&small_text, &mut output, &options, &mut workspace).unwrap();
+        assert_eq!(workspace.table_memory.len(), grown_length);
+        let mut small_decoded = vec![0u8; small_text.len()];
+        decompress(
+            &output[..small_written],
+            &mut small_decoded,
+            &mut decode_workspace,
+        )
+        .unwrap();
+        assert_eq!(small_decoded, small_text);
+    }
+
+    #[test]
+    fn reused_workspace_matches_fresh_workspace_output() {
+        let mut first_text = vec![b'#'; 7];
+        first_text.extend_from_slice(&build_deterministic_text(300 * 1024));
+        let second_text = build_deterministic_text(40 * 1024);
+        for level in [1u8, 9] {
+            let options = CompressOptions {
+                format: CompressFormat::Zstd,
+                with_checksum: false,
+                level,
+            };
+            let mut output = vec![0u8; get_max_compressed_size(first_text.len(), &options)];
+            let mut reused = EncodeWorkspace::new_boxed_for_level(level).unwrap();
+            compress(&first_text, &mut output, &options, &mut reused).unwrap();
+            let reused_length = compress(&second_text, &mut output, &options, &mut reused).unwrap();
+            let reused_output = output[..reused_length].to_vec();
+            let mut fresh = EncodeWorkspace::new_boxed_for_level(level).unwrap();
+            let fresh_length = compress(&second_text, &mut output, &options, &mut fresh).unwrap();
+            assert_eq!(reused_output, output[..fresh_length]);
+        }
+    }
+
     #[test]
     fn level_nine_zstd_frame_header_window_log_is_twenty_two() {
         let options = CompressOptions {
-            format: FrameFormat::Zstd,
+            format: CompressFormat::Zstd,
             with_checksum: true,
-            chunk_size: 0,
             level: 9,
         };
         let mut workspace = EncodeWorkspace::new_boxed_for_level(9).unwrap();
@@ -864,9 +1061,8 @@ mod tests {
     #[test]
     fn level_nine_zstd_frame_round_trips_through_our_decoder_and_the_cli() {
         let options = CompressOptions {
-            format: FrameFormat::Zstd,
+            format: CompressFormat::Zstd,
             with_checksum: true,
-            chunk_size: 0,
             level: 9,
         };
         let mut workspace = EncodeWorkspace::new_boxed_for_level(9).unwrap();
@@ -911,10 +1107,8 @@ mod tests {
             let input = generate_incompressible_bytes(length, length as u64 + 1);
             for &chunk_size in &chunk_sizes {
                 let options = CompressOptions {
-                    format: FrameFormat::Cosmoz,
-                    with_checksum: true,
-                    chunk_size,
-                    level: 1,
+                    format: CompressFormat::Cosmoz { chunk_size },
+                    ..CompressOptions::cosmoz()
                 };
                 let max_length = get_max_compressed_size(input.len(), &options);
                 let mut output = vec![0u8; max_length];
@@ -937,9 +1131,12 @@ mod tests {
     #[test]
     fn merges_two_chunks_into_one_when_the_merged_chunk_fits_the_window() {
         let text = build_deterministic_text(6000);
-        let mut options = CompressOptions::cosmoz();
-        options.chunk_size = 4096;
-        let split_chunk_count = text.len().div_ceil(options.chunk_size);
+        let chunk_size = 4096;
+        let options = CompressOptions {
+            format: CompressFormat::Cosmoz { chunk_size },
+            ..CompressOptions::cosmoz()
+        };
+        let split_chunk_count = text.len().div_ceil(chunk_size);
         assert_eq!(split_chunk_count, 2);
 
         let mut workspace = EncodeWorkspace::new_boxed();
@@ -959,10 +1156,13 @@ mod tests {
     #[test]
     fn keeps_the_split_when_the_merged_chunk_would_need_a_larger_window() {
         let text = build_deterministic_text(1_400_000);
-        let mut options = CompressOptions::cosmoz();
-        options.chunk_size = 700_000;
+        let chunk_size = 700_000;
+        let mut options = CompressOptions {
+            format: CompressFormat::Cosmoz { chunk_size },
+            ..CompressOptions::cosmoz()
+        };
         options.level = 1;
-        let split_chunk_count = text.len().div_ceil(options.chunk_size);
+        let split_chunk_count = text.len().div_ceil(chunk_size);
         assert_eq!(split_chunk_count, 2);
         assert!(text.len() > (1usize << level_table::level_one_parameters().window_log));
 
@@ -983,8 +1183,11 @@ mod tests {
     #[test]
     fn single_chunk_cosmoz_frame_round_trips_through_the_parallel_decoder() {
         let text = build_deterministic_text(6000);
-        let mut options = CompressOptions::cosmoz();
-        options.chunk_size = 4096;
+        let chunk_size = 4096;
+        let options = CompressOptions {
+            format: CompressFormat::Cosmoz { chunk_size },
+            ..CompressOptions::cosmoz()
+        };
 
         let mut workspace = EncodeWorkspace::new_boxed();
         let mut output = vec![0u8; get_max_compressed_size(text.len(), &options)];

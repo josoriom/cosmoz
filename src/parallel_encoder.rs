@@ -1,5 +1,5 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
-use std::{sync::Mutex, thread, vec, vec::Vec};
+use std::{sync::Mutex, thread, vec::Vec};
 
 use crate::{
     block::repeat_offsets::RepeatOffsets,
@@ -31,6 +31,7 @@ fn chunk_bounds(input_length: usize, chunk_size: usize, chunk_number: usize) -> 
 pub fn compress_chunks_in_parallel(
     input: &[u8],
     chunk_size: usize,
+    level: u8,
     output_after_index: &mut [u8],
     entries: &mut [ChunkEntry],
 ) -> Result<usize, EncodeError> {
@@ -39,8 +40,26 @@ pub fn compress_chunks_in_parallel(
         return Err(EncodeError::BadOptions);
     }
 
-    let chunk_slots: Mutex<Vec<Option<Vec<u8>>>> =
-        Mutex::new((0..chunk_count).map(|_| None).collect());
+    let region_size = max_chunk_compressed_size(chunk_size);
+    let mut regions: Vec<Option<&mut [u8]>> = Vec::with_capacity(chunk_count);
+    let mut remaining_output = &mut *output_after_index;
+    for chunk_number in 0..chunk_count {
+        let split_length = if chunk_number + 1 < chunk_count {
+            region_size
+        } else {
+            remaining_output.len()
+        };
+        if remaining_output.len() < split_length {
+            return Err(EncodeError::OutputTooSmall);
+        }
+        let (region, rest) = remaining_output.split_at_mut(split_length);
+        regions.push(Some(region));
+        remaining_output = rest;
+    }
+
+    let regions = Mutex::new(regions);
+    let compressed_lengths: Vec<AtomicUsize> =
+        (0..chunk_count).map(|_| AtomicUsize::new(0)).collect();
     let next_chunk_number = AtomicUsize::new(0);
     let first_error: Mutex<Option<EncodeError>> = Mutex::new(None);
 
@@ -52,44 +71,18 @@ pub fn compress_chunks_in_parallel(
     thread::scope(|scope| {
         for _ in 0..thread_count {
             scope.spawn(|| {
-                let mut workspace = EncodeWorkspace::new_boxed();
-                loop {
-                    let chunk_number = next_chunk_number.fetch_add(1, Ordering::Relaxed);
-                    if chunk_number >= chunk_count {
-                        break;
-                    }
-
-                    if first_error.lock().unwrap().is_some() {
-                        break;
-                    }
-
-                    let (chunk_start, chunk_end) =
-                        chunk_bounds(input.len(), chunk_size, chunk_number);
-                    let chunk_content = &input[chunk_start..chunk_end];
-
-                    workspace.match_finder.reset();
-                    workspace.repeat_offsets = RepeatOffsets::new();
-
-                    let mut scratch = vec![0u8; max_chunk_compressed_size(chunk_content.len())];
-                    let result = compress_chunk(
-                        chunk_content,
-                        FrameFormat::Cosmoz,
-                        &mut scratch,
-                        &mut workspace,
-                    );
-
-                    match result {
-                        Ok(compressed_length) => {
-                            scratch.truncate(compressed_length);
-                            chunk_slots.lock().unwrap()[chunk_number] = Some(scratch);
-                        }
-                        Err(error) => {
-                            let mut first_error = first_error.lock().unwrap();
-                            if first_error.is_none() {
-                                *first_error = Some(error);
-                            }
-                            break;
-                        }
+                if let Err(error) = run_worker(
+                    input,
+                    chunk_size,
+                    level,
+                    &regions,
+                    &compressed_lengths,
+                    &next_chunk_number,
+                    &first_error,
+                ) {
+                    let mut first_error = first_error.lock().unwrap();
+                    if first_error.is_none() {
+                        *first_error = Some(error);
                     }
                 }
             });
@@ -100,23 +93,102 @@ pub fn compress_chunks_in_parallel(
         return Err(error);
     }
 
-    let chunk_slots = chunk_slots.into_inner().unwrap();
     let mut position = 0usize;
     for chunk_number in 0..chunk_count {
-        let chunk_bytes = chunk_slots[chunk_number]
-            .as_ref()
-            .expect("chunk output slot missing");
+        let compressed_length = compressed_lengths[chunk_number].load(Ordering::Relaxed);
+        let region_start = chunk_number * region_size;
+        output_after_index.copy_within(region_start..region_start + compressed_length, position);
         let (chunk_start, chunk_end) = chunk_bounds(input.len(), chunk_size, chunk_number);
-        let output_slice = output_after_index
-            .get_mut(position..position + chunk_bytes.len())
-            .ok_or(EncodeError::OutputTooSmall)?;
-        output_slice.copy_from_slice(chunk_bytes);
         entries[chunk_number] = ChunkEntry {
-            compressed_length: chunk_bytes.len(),
+            compressed_length,
             decompressed_length: chunk_end - chunk_start,
         };
-        position += chunk_bytes.len();
+        position += compressed_length;
     }
 
     Ok(position)
+}
+
+fn run_worker(
+    input: &[u8],
+    chunk_size: usize,
+    level: u8,
+    regions: &Mutex<Vec<Option<&mut [u8]>>>,
+    compressed_lengths: &[AtomicUsize],
+    next_chunk_number: &AtomicUsize,
+    first_error: &Mutex<Option<EncodeError>>,
+) -> Result<(), EncodeError> {
+    let mut workspace = EncodeWorkspace::new_boxed_for_level(level)?;
+    workspace.prepare_tables_for_input(chunk_size.min(input.len()))?;
+    loop {
+        let chunk_number = next_chunk_number.fetch_add(1, Ordering::Relaxed);
+        if chunk_number >= compressed_lengths.len() || first_error.lock().unwrap().is_some() {
+            return Ok(());
+        }
+        let (chunk_start, chunk_end) = chunk_bounds(input.len(), chunk_size, chunk_number);
+        let chunk_content = &input[chunk_start..chunk_end];
+        let region = regions.lock().unwrap()[chunk_number]
+            .take()
+            .ok_or(EncodeError::OutputTooSmall)?;
+
+        workspace.match_finder.reset(chunk_content.len());
+        workspace.repeat_offsets = RepeatOffsets::new();
+
+        let compressed_length =
+            compress_chunk(chunk_content, FrameFormat::Cosmoz, region, &mut workspace)?;
+        compressed_lengths[chunk_number].store(compressed_length, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::decoder::{DecodeWorkspace, decompress};
+    use crate::encoder::{
+        CompressFormat, CompressOptions, EncodeWorkspace, compress, get_max_compressed_size,
+    };
+    use std::vec::Vec;
+
+    fn build_input(length: usize) -> Vec<u8> {
+        let mut state = 7u64;
+        let words: [&[u8]; 6] = [
+            b"alpha ", b"beta ", b"gamma ", b"delta ", b"omega ", b"sigma ",
+        ];
+        let mut input = Vec::with_capacity(length);
+        while input.len() < length {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            input.extend_from_slice(words[(state >> 60) as usize % words.len()]);
+            input.push((state >> 40) as u8);
+        }
+        input.truncate(length);
+        input
+    }
+
+    fn compress_at_level(input: &[u8], level: u8) -> Vec<u8> {
+        let options = CompressOptions {
+            format: CompressFormat::Cosmoz {
+                chunk_size: 64 * 1024,
+            },
+            with_checksum: false,
+            level,
+        };
+        let mut workspace = EncodeWorkspace::new_boxed_for_level(level).unwrap();
+        let mut output = vec![0u8; get_max_compressed_size(input.len(), &options)];
+        let written = compress(input, &mut output, &options, &mut workspace).unwrap();
+        output.truncate(written);
+        output
+    }
+
+    #[test]
+    fn parallel_chunks_use_the_requested_level() {
+        let input = build_input(512 * 1024);
+        let level_one = compress_at_level(&input, 1);
+        let level_nine = compress_at_level(&input, 9);
+        assert!(level_nine.len() < level_one.len());
+        let mut decoded = vec![0u8; input.len()];
+        let mut decode_workspace = DecodeWorkspace::new_boxed();
+        decompress(&level_nine, &mut decoded, &mut decode_workspace).unwrap();
+        assert_eq!(decoded, input);
+    }
 }

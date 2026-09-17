@@ -19,6 +19,8 @@ const MIN_STEP: usize = 2;
 pub struct FastFinder {
     pub positions: [u32; HASH_TABLE_SIZE],
     pub window_log: u8,
+    base: u32,
+    last_input_length: usize,
 }
 
 impl FastFinder {
@@ -26,13 +28,22 @@ impl FastFinder {
         FastFinder {
             positions: [0; HASH_TABLE_SIZE],
             window_log,
+            base: 0,
+            last_input_length: 0,
         }
     }
 }
 
 impl MatchFinder for FastFinder {
-    fn reset(&mut self) {
-        self.positions.fill(0);
+    fn reset(&mut self, input_length: usize) {
+        let next_base = self.base as usize + self.last_input_length + 1;
+        if next_base + input_length >= u32::MAX as usize {
+            self.positions.fill(0);
+            self.base = 0;
+        } else {
+            self.base = next_base as u32;
+        }
+        self.last_input_length = input_length;
     }
 
     fn window_log(&self) -> u8 {
@@ -99,11 +110,11 @@ impl FastFinder {
             let hash0 = hash_table_index(value0, HASH_LOG as u32);
             let hash1 = hash_table_index(value1, HASH_LOG as u32);
 
-            let candidate0 = self.positions[hash0];
-            let candidate1 = self.positions[hash1];
+            let candidate0 = self.positions[hash0].wrapping_sub(self.base);
+            let candidate1 = self.positions[hash1].wrapping_sub(self.base);
 
-            self.positions[hash0] = position as u32 + 1;
-            self.positions[hash1] = next_position as u32 + 1;
+            self.positions[hash0] = position as u32 + 1 + self.base;
+            self.positions[hash1] = next_position as u32 + 1 + self.base;
 
             let repeat_offset = repeat_offsets.first as usize;
 
@@ -192,7 +203,7 @@ impl FastFinder {
                 break;
             }
             let hash = unsafe { hash_position_unchecked(input, position) };
-            self.positions[hash] = position as u32 + 1;
+            self.positions[hash] = position as u32 + 1 + self.base;
             offset += 1;
         }
     }

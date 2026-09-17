@@ -35,6 +35,8 @@ pub struct Lazy2Finder<'tables> {
     next_to_insert: usize,
     hash_cache: [u32; HASH_CACHE_SIZE],
     lazy_skipping: bool,
+    base: u32,
+    last_input_length: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -123,6 +125,8 @@ impl<'tables> Lazy2Finder<'tables> {
             next_to_insert: 0,
             hash_cache: [0; HASH_CACHE_SIZE],
             lazy_skipping: false,
+            base: 0,
+            last_input_length: 0,
         }
     }
 
@@ -197,7 +201,7 @@ impl<'tables> Lazy2Finder<'tables> {
             }
             *head = next as u8;
             *self.tags.get_unchecked_mut(row_base + next) = hash as u8;
-            *self.positions.get_unchecked_mut(row_base + next) = position as u32;
+            *self.positions.get_unchecked_mut(row_base + next) = position as u32 + self.base;
         }
     }
 
@@ -261,7 +265,8 @@ impl<'tables> Lazy2Finder<'tables> {
             if slot == 0 {
                 continue;
             }
-            let candidate = unsafe { *self.positions.get_unchecked(row_base + slot) } as usize;
+            let candidate = unsafe { *self.positions.get_unchecked(row_base + slot) }
+                .wrapping_sub(self.base) as usize;
             if candidate < lowest_valid {
                 break;
             }
@@ -486,9 +491,17 @@ unsafe fn count_unchecked(input: &[u8], first: usize, second: usize, limit: usiz
 }
 
 impl MatchFinder for Lazy2Finder<'_> {
-    fn reset(&mut self) {
-        self.positions.fill(u32::MAX);
-        self.tags.fill(0);
+    fn reset(&mut self, input_length: usize) {
+        let next_base = self.base as usize + self.last_input_length + 1;
+        let is_large_input = input_length >= self.positions.len();
+        if is_large_input || next_base + input_length >= u32::MAX as usize {
+            self.positions.fill(u32::MAX);
+            self.tags.fill(0);
+            self.base = 0;
+        } else {
+            self.base = next_base as u32;
+        }
+        self.last_input_length = input_length;
         self.next_to_insert = 0;
         self.lazy_skipping = false;
     }

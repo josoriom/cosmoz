@@ -22,11 +22,19 @@ pub mod parallel_decoder;
 #[cfg(all(feature = "parallel", feature = "encoder"))]
 pub mod parallel_encoder;
 pub mod simd;
+#[cfg(all(feature = "encoder", feature = "alloc"))]
+pub mod stream_encoder;
+#[cfg(all(feature = "encoder", feature = "std"))]
+pub mod stream_writer;
 #[cfg(all(target_arch = "wasm32", feature = "wasm-exports"))]
 pub mod wasm;
 
-pub use decoder::{DecodeWorkspace, decompress, get_decompressed_size};
+pub use decoder::{DecodeWorkspace, decompress, get_decompressed_size, get_frame_compressed_size};
 pub use encode_error::EncodeError;
 #[cfg(feature = "encoder")]
-pub use encoder::{CompressOptions, EncodeWorkspace, compress, get_max_compressed_size};
+pub use encoder::{CompressFormat, CompressOptions, EncodeWorkspace, compress, get_max_compressed_size};
 pub use error::DecodeError;
+#[cfg(all(feature = "encoder", feature = "alloc"))]
+pub use stream_encoder::StreamEncoder;
+#[cfg(all(feature = "encoder", feature = "std"))]
+pub use stream_writer::StreamWriter;

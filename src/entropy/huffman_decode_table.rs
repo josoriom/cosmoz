@@ -201,6 +201,13 @@ fn add_last_weight(weights: &mut [u8], weight_count: usize) -> Result<usize, Dec
         return Err(DecodeError::BadHuffmanWeights);
     }
     weights[weight_count] = (remainder_highest_bit + 1) as u8;
+    let longest_code_count = weights[..=weight_count]
+        .iter()
+        .filter(|&&weight| weight == 1)
+        .count();
+    if longest_code_count < 2 || longest_code_count % 2 != 0 {
+        return Err(DecodeError::BadHuffmanWeights);
+    }
     Ok(weight_count + 1)
 }
 
@@ -314,10 +321,16 @@ mod tests {
 
     #[test]
     fn derives_last_weight_and_rejects_invalid_weight_sums() {
-        let mut valid_weights = [2u8, 2, 2, 0];
+        let mut valid_weights = [1u8, 1, 2, 0];
         let symbol_count = add_last_weight(&mut valid_weights, 3).unwrap();
         assert_eq!(symbol_count, 4);
-        assert_eq!(valid_weights[3], 2);
+        assert_eq!(valid_weights[3], 3);
+
+        let mut no_longest_code_pair = [2u8, 2, 2, 0];
+        assert_eq!(
+            add_last_weight(&mut no_longest_code_pair, 3),
+            Err(DecodeError::BadHuffmanWeights)
+        );
 
         let mut non_power_of_two_remainder = [3u8, 3, 2, 0];
         assert_eq!(

@@ -228,7 +228,7 @@ impl<'input> SequenceStream<'input> {
     }
 
     fn is_finished(&self) -> bool {
-        self.sequences_left == 0
+        self.sequences_left == 0 && self.reader.is_finished()
     }
 
     fn next_sequence(
@@ -375,6 +375,17 @@ impl<'input, 'tables> SequenceDecoder<'input, 'tables> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_with_unread_sequence_bits_is_rejected_like_libzstd() {
+        let frame = [
+            0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x68, 0x4d, 0x00, 0x00, 0x08, 0x61, 0x01, 0x00, 0x93,
+            0x5b, 0x0d, 0x08, 0x01,
+        ];
+        let mut workspace = crate::decoder::DecodeWorkspace::new_boxed();
+        let mut output = [0u8; 64];
+        assert!(crate::decoder::decompress(&frame, &mut output, &mut workspace).is_err());
+    }
 
     #[test]
     fn header_with_two_sequences_and_all_predefined_modes() {
