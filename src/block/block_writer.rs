@@ -13,7 +13,7 @@ use crate::{
     encoder::EncodeWorkspace,
     entropy::huffman_encode_table::HuffmanEncodeTable,
     frame::{block_header::BlockType, frame_header::FrameFormat, frame_writer::write_block_header},
-    match_finder::MatchFinder,
+    levels::MatchFinder,
 };
 
 #[cfg(all(feature = "alloc", feature = "levels"))]
@@ -464,14 +464,14 @@ behind the distant hills and the wind carries the scent of rain across the quiet
         let written = write_block(
             &input,
             0,
-            FrameFormat::Osmos,
+            FrameFormat::Cosmoz,
             true,
             &mut output,
             &mut workspace,
         )
         .unwrap();
         assert!(written < input.len());
-        let decoded = decode_one_block(&output[..written], input.len(), FrameFormat::Osmos);
+        let decoded = decode_one_block(&output[..written], input.len(), FrameFormat::Cosmoz);
         assert_eq!(decoded, input);
     }
 
@@ -513,13 +513,13 @@ behind the distant hills and the wind carries the scent of rain across the quiet
         let written = write_block(
             &input,
             0,
-            FrameFormat::Osmos,
+            FrameFormat::Cosmoz,
             true,
             &mut output,
             &mut workspace,
         )
         .unwrap();
-        let decoded = decode_one_block(&output[..written], input.len(), FrameFormat::Osmos);
+        let decoded = decode_one_block(&output[..written], input.len(), FrameFormat::Cosmoz);
         assert_eq!(decoded, input);
     }
 }

@@ -319,7 +319,7 @@ fn resolve_stream_count(format: FrameFormat, header_stream_count: u8) -> usize {
     } else {
         match format {
             FrameFormat::Zstd => 4,
-            FrameFormat::Osmos => 8,
+            FrameFormat::Cosmoz => 8,
         }
     }
 }

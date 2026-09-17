@@ -285,7 +285,7 @@ fn pick_stream_count(format: FrameFormat, length: usize) -> usize {
     }
     let stream_count = match format {
         FrameFormat::Zstd => 4,
-        FrameFormat::Osmos => 8,
+        FrameFormat::Cosmoz => 8,
     };
     let segment = length.div_ceil(stream_count);
     if (stream_count - 1) * segment > length {
@@ -431,10 +431,10 @@ behind the distant hills and the wind carries the scent of rain across the quiet
     }
 
     #[test]
-    fn round_trips_twenty_kilobytes_as_osmos_with_eight_streams() {
+    fn round_trips_twenty_kilobytes_as_cosmoz_with_eight_streams() {
         let input = repeating_text(20 * 1024);
 
-        let stream_count = pick_stream_count(FrameFormat::Osmos, input.len());
+        let stream_count = pick_stream_count(FrameFormat::Cosmoz, input.len());
         assert_eq!(stream_count, 8);
         assert_eq!((stream_count - 1) * 2, 14);
 
@@ -443,7 +443,7 @@ behind the distant hills and the wind carries the scent of rain across the quiet
         let mut output = vec![0u8; input.len() * 2 + 1024];
         let bytes_written = write_literals(
             &input,
-            FrameFormat::Osmos,
+            FrameFormat::Cosmoz,
             &mut output,
             &mut huffman_encode_table,
             &mut weight_fse_table,
@@ -457,7 +457,7 @@ behind the distant hills and the wind carries the scent of rain across the quiet
         let size_format = (output[0] >> 2) & 0b11;
         assert_ne!(size_format, 0);
 
-        let decoded = round_trip(&input, FrameFormat::Osmos);
+        let decoded = round_trip(&input, FrameFormat::Cosmoz);
         assert_eq!(decoded, input);
     }
 

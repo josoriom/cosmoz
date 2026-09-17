@@ -4,7 +4,7 @@ use crate::{
         block_header::{BLOCK_HEADER_LENGTH, BlockType, MAX_BLOCK_SIZE},
         chunk_index::{CHUNK_COUNT_LENGTH, CHUNK_ENTRY_LENGTH, ChunkEntry},
         frame_header::{
-            FrameFormat, OSMOS_CHECKSUM_LENGTH, OSMOS_MAGIC_NUMBER, ZSTD_CHECKSUM_LENGTH,
+            FrameFormat, COSMOZ_CHECKSUM_LENGTH, COSMOZ_MAGIC_NUMBER, ZSTD_CHECKSUM_LENGTH,
             ZSTD_MAGIC_NUMBER,
         },
     },
@@ -33,7 +33,7 @@ pub fn write_frame_header(
 
     let magic_number = match format {
         FrameFormat::Zstd => ZSTD_MAGIC_NUMBER,
-        FrameFormat::Osmos => OSMOS_MAGIC_NUMBER,
+        FrameFormat::Cosmoz => COSMOZ_MAGIC_NUMBER,
     };
     output[0..4].copy_from_slice(&magic_number.to_le_bytes());
 
@@ -132,7 +132,7 @@ pub fn write_checksum(
 ) -> Result<usize, EncodeError> {
     let checksum_length = match format {
         FrameFormat::Zstd => ZSTD_CHECKSUM_LENGTH,
-        FrameFormat::Osmos => OSMOS_CHECKSUM_LENGTH,
+        FrameFormat::Cosmoz => COSMOZ_CHECKSUM_LENGTH,
     };
 
     if output.len() < checksum_length {
@@ -144,8 +144,8 @@ pub fn write_checksum(
             let low_32_bits = (hash & 0xFFFF_FFFF) as u32;
             output[0..ZSTD_CHECKSUM_LENGTH].copy_from_slice(&low_32_bits.to_le_bytes());
         }
-        FrameFormat::Osmos => {
-            output[0..OSMOS_CHECKSUM_LENGTH].copy_from_slice(&hash.to_le_bytes());
+        FrameFormat::Cosmoz => {
+            output[0..COSMOZ_CHECKSUM_LENGTH].copy_from_slice(&hash.to_le_bytes());
         }
     }
 
@@ -199,7 +199,7 @@ mod tests {
             u32::MAX as u64,
             u32::MAX as u64 + 1,
         ];
-        let formats = [FrameFormat::Zstd, FrameFormat::Osmos];
+        let formats = [FrameFormat::Zstd, FrameFormat::Cosmoz];
         let checksum_choices = [false, true];
         let window_log = 20u8;
         let mut max_written_length = 0usize;
@@ -283,9 +283,9 @@ mod tests {
             Err(EncodeError::OutputTooSmall)
         );
 
-        let mut short_osmos_checksum_output = [0u8; 7];
+        let mut short_cosmoz_checksum_output = [0u8; 7];
         assert_eq!(
-            write_checksum(&mut short_osmos_checksum_output, FrameFormat::Osmos, 1),
+            write_checksum(&mut short_cosmoz_checksum_output, FrameFormat::Cosmoz, 1),
             Err(EncodeError::OutputTooSmall)
         );
     }

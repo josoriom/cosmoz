@@ -10,7 +10,7 @@ use crate::{
         chunk_index::ChunkEntry,
         frame_header::FrameFormat,
     },
-    match_finder::MatchFinder,
+    levels::MatchFinder,
 };
 
 fn max_chunk_compressed_size(chunk_length: usize) -> usize {
@@ -73,7 +73,7 @@ pub fn compress_chunks_in_parallel(
                     let mut scratch = vec![0u8; max_chunk_compressed_size(chunk_content.len())];
                     let result = compress_chunk(
                         chunk_content,
-                        FrameFormat::Osmos,
+                        FrameFormat::Cosmoz,
                         &mut scratch,
                         &mut workspace,
                     );

@@ -128,7 +128,7 @@ mod new_boxed_tests {
 #[allow(clippy::large_enum_variant)]
 enum ContentHasher {
     Zstd(XxHash64),
-    Osmos(XxHash3),
+    Cosmoz(XxHash3),
 }
 
 #[cfg(feature = "checksum")]
@@ -136,14 +136,14 @@ impl ContentHasher {
     fn new(format: FrameFormat) -> Self {
         match format {
             FrameFormat::Zstd => ContentHasher::Zstd(XxHash64::new(0)),
-            FrameFormat::Osmos => ContentHasher::Osmos(XxHash3::new()),
+            FrameFormat::Cosmoz => ContentHasher::Cosmoz(XxHash3::new()),
         }
     }
 
     fn update(&mut self, input: &[u8]) {
         match self {
             ContentHasher::Zstd(hasher) => hasher.update(input),
-            ContentHasher::Osmos(hasher) => hasher.update(input),
+            ContentHasher::Cosmoz(hasher) => hasher.update(input),
         }
     }
 
@@ -153,7 +153,7 @@ impl ContentHasher {
                 let low_32_bits = (hasher.finish() & 0xFFFF_FFFF) as u32;
                 expected_bytes == low_32_bits.to_le_bytes()
             }
-            ContentHasher::Osmos(hasher) => expected_bytes == hasher.finish().to_le_bytes(),
+            ContentHasher::Cosmoz(hasher) => expected_bytes == hasher.finish().to_le_bytes(),
         }
     }
 }
@@ -236,7 +236,7 @@ fn read_next_compressed_block(
 fn skip_frame_body(input: &[u8], header: &FrameHeader) -> Result<usize, DecodeError> {
     match header.format {
         FrameFormat::Zstd => skip_zstd_frame_body(input, header),
-        FrameFormat::Osmos => skip_osmos_frame_body(input, header),
+        FrameFormat::Cosmoz => skip_cosmoz_frame_body(input, header),
     }
 }
 
@@ -266,7 +266,7 @@ fn skip_zstd_frame_body(input: &[u8], header: &FrameHeader) -> Result<usize, Dec
     Ok(position)
 }
 
-fn skip_osmos_frame_body(input: &[u8], header: &FrameHeader) -> Result<usize, DecodeError> {
+fn skip_cosmoz_frame_body(input: &[u8], header: &FrameHeader) -> Result<usize, DecodeError> {
     let index_input = input
         .get(header.header_length..)
         .ok_or(DecodeError::InputTooShort)?;
@@ -359,7 +359,7 @@ fn decode_frame(
             frame_start_output_position,
             workspace,
         )?,
-        FrameFormat::Osmos => decode_osmos_frame_body(
+        FrameFormat::Cosmoz => decode_cosmoz_frame_body(
             input,
             &header,
             output,
@@ -422,7 +422,7 @@ fn decode_zstd_frame_body(
     ))
 }
 
-fn decode_osmos_frame_body(
+fn decode_cosmoz_frame_body(
     input: &[u8],
     header: &FrameHeader,
     output: &mut [u8],
@@ -461,12 +461,12 @@ fn decode_osmos_frame_body(
         .get_mut(frame_start_output_position..output_end)
         .ok_or(DecodeError::OutputTooSmall)?;
 
-    decode_osmos_chunks(chunks_input, &index, output_region, workspace)?;
+    decode_cosmoz_chunks(chunks_input, &index, output_region, workspace)?;
 
     Ok((chunks_input_end, output_end))
 }
 
-fn decode_osmos_chunks(
+fn decode_cosmoz_chunks(
     chunks_input: &[u8],
     index: &ChunkIndex,
     output: &mut [u8],
@@ -478,10 +478,10 @@ fn decode_osmos_chunks(
             return crate::parallel_decoder::decode_chunks_in_parallel(chunks_input, index, output);
         }
     }
-    decode_osmos_chunks_sequentially(chunks_input, index, output, &mut workspace.block)
+    decode_cosmoz_chunks_sequentially(chunks_input, index, output, &mut workspace.block)
 }
 
-fn decode_osmos_chunks_sequentially(
+fn decode_cosmoz_chunks_sequentially(
     chunks_input: &[u8],
     index: &ChunkIndex,
     output: &mut [u8],
@@ -499,7 +499,7 @@ fn decode_osmos_chunks_sequentially(
             .get_mut(output_offset..output_offset + entry.decompressed_length)
             .ok_or(DecodeError::OutputTooSmall)?;
 
-        block_workspace.reset_history(FrameFormat::Osmos);
+        block_workspace.reset_history(FrameFormat::Cosmoz);
         let (bytes_consumed, bytes_written) =
             decode_block_sequence(chunk_input, chunk_output, block_workspace)?;
         if bytes_consumed != chunk_input.len() || bytes_written != entry.decompressed_length {
@@ -650,7 +650,7 @@ mod tests {
         assert_eq!(&output[500..1000], text.as_slice());
     }
 
-    fn build_osmos_frame() -> Vec<u8> {
+    fn build_cosmoz_frame() -> Vec<u8> {
         let zstd_checksum_length = 4;
         let header = read_frame_header(&TEXT_500_WITH_CHECKSUM).unwrap();
         let header_length = header.header_length;
@@ -674,8 +674,8 @@ mod tests {
     }
 
     #[test]
-    fn decompresses_an_osmos_frame_with_checksum() {
-        let frame = build_osmos_frame();
+    fn decompresses_an_cosmoz_frame_with_checksum() {
+        let frame = build_cosmoz_frame();
         let mut workspace = DecodeWorkspace::new_boxed();
         let mut output = [0u8; 1024];
         let written = decompress(&frame, &mut output, &mut workspace).unwrap();
@@ -684,8 +684,8 @@ mod tests {
     }
 
     #[test]
-    fn rejects_flipped_osmos_checksum_byte() {
-        let mut frame = build_osmos_frame();
+    fn rejects_flipped_cosmoz_checksum_byte() {
+        let mut frame = build_cosmoz_frame();
         let last_index = frame.len() - 1;
         frame[last_index] ^= 0xFF;
         let mut workspace = DecodeWorkspace::new_boxed();
@@ -707,7 +707,7 @@ mod tests {
     }
 
     #[test]
-    fn decompresses_an_osmos_frame_with_empty_content() {
+    fn decompresses_an_cosmoz_frame_with_empty_content() {
         let mut frame = Vec::new();
         frame.extend_from_slice(&[0x4F, 0x53, 0x4D, 0x4F]);
         frame.push(0x24);

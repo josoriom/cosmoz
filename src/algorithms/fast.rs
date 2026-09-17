@@ -1,4 +1,4 @@
-use super::{MIN_MATCH, MatchFinder};
+use crate::levels::{MIN_MATCH, MatchFinder};
 use crate::{
     block::{
         repeat_offsets::RepeatOffsets, sequence_codes::MAX_MATCH_LENGTH,
@@ -10,26 +10,27 @@ use crate::{
 pub const HASH_LOG: usize = 16;
 pub const HASH_TABLE_SIZE: usize = 1 << HASH_LOG;
 
-const HASH_MULTIPLIER: u32 = 0x9E37_79B1;
+const HASH_MULTIPLIER: u64 = 227_718_039_650_203;
+const HASHED_BYTE_SHIFT: u32 = 16;
 const HASH_READ_SIZE: usize = 8;
 const SKIP_SHIFT: usize = 6;
 const MIN_STEP: usize = 2;
 
-pub struct HashTableFinder {
+pub struct FastFinder {
     pub positions: [u32; HASH_TABLE_SIZE],
     pub window_log: u8,
 }
 
-impl HashTableFinder {
+impl FastFinder {
     pub const fn new(window_log: u8) -> Self {
-        HashTableFinder {
+        FastFinder {
             positions: [0; HASH_TABLE_SIZE],
             window_log,
         }
     }
 }
 
-impl MatchFinder for HashTableFinder {
+impl MatchFinder for FastFinder {
     fn reset(&mut self) {
         self.positions.fill(0);
     }
@@ -69,7 +70,7 @@ impl MatchFinder for HashTableFinder {
     }
 }
 
-impl HashTableFinder {
+impl FastFinder {
     unsafe fn find_sequences_unchecked(
         &mut self,
         input: &[u8],
@@ -182,10 +183,10 @@ impl HashTableFinder {
     }
 
     fn insert_positions_after_match(&mut self, input: &[u8], match_end: usize, scan_limit: usize) {
-        let insert_base = match_end.saturating_sub(4);
+        let insert_base = match_end.saturating_sub(2);
 
         let mut offset = 0usize;
-        while offset < 4 {
+        while offset < 2 {
             let position = insert_base + offset;
             if position > scan_limit {
                 break;
@@ -234,7 +235,7 @@ fn skip_step(position: usize, literal_start: usize) -> usize {
 }
 
 fn hash_table_index(value: u64, hash_log: u32) -> usize {
-    ((value as u32).wrapping_mul(HASH_MULTIPLIER) >> (32 - hash_log)) as usize
+    ((value << HASHED_BYTE_SHIFT).wrapping_mul(HASH_MULTIPLIER) >> (64 - hash_log)) as usize
 }
 
 unsafe fn hash_position_unchecked(input: &[u8], position: usize) -> usize {
@@ -333,7 +334,7 @@ mod tests {
             input.extend_from_slice(pattern);
         }
 
-        let mut finder = HashTableFinder::new(20);
+        let mut finder = FastFinder::new(20);
         let mut repeat_offsets = RepeatOffsets::new();
         let mut sequences = [SequenceRecord::default(); 8];
 
@@ -356,7 +357,7 @@ mod tests {
         }
         input.truncate(100_000);
 
-        let mut finder = HashTableFinder::new(20);
+        let mut finder = FastFinder::new(20);
         let mut repeat_offsets = RepeatOffsets::new();
         let mut decoder_history = RepeatOffsets::new();
         let mut sequences = vec![SequenceRecord::default(); 4096];
@@ -403,7 +404,7 @@ mod tests {
         input.extend_from_slice(b"REPEATED_TOKEN_TWO_");
         input.extend(generate_pseudo_random_bytes(20, 0x6666_6666));
 
-        let mut finder = HashTableFinder::new(5);
+        let mut finder = FastFinder::new(5);
         let mut repeat_offsets = RepeatOffsets::new();
         let mut decoder_history = RepeatOffsets::new();
         let mut sequences = [SequenceRecord::default(); 2];
@@ -430,7 +431,7 @@ mod tests {
     fn random_input_is_mostly_literals_and_still_valid() {
         let input = generate_pseudo_random_bytes(64 * 1024, 0xC0FF_EE11);
 
-        let mut finder = HashTableFinder::new(20);
+        let mut finder = FastFinder::new(20);
         let mut repeat_offsets = RepeatOffsets::new();
         let mut decoder_history = RepeatOffsets::new();
         let mut sequences = vec![SequenceRecord::default(); 4096];
@@ -452,7 +453,7 @@ mod tests {
     fn skip_ahead_still_covers_incompressible_input_exactly() {
         let input = generate_pseudo_random_bytes(200_000, 0xFACE_FEED);
 
-        let mut finder = HashTableFinder::new(20);
+        let mut finder = FastFinder::new(20);
         let mut repeat_offsets = RepeatOffsets::new();
         let mut decoder_history = RepeatOffsets::new();
         let mut sequences = vec![SequenceRecord::default(); 8192];
@@ -623,7 +624,7 @@ mod tests {
 
             random_state = next_pseudo_random_number(&mut random_state);
 
-            let mut finder = HashTableFinder::new(20);
+            let mut finder = FastFinder::new(20);
             let mut repeat_offsets = RepeatOffsets::new();
             let mut decoder_history = RepeatOffsets::new();
             let mut sequences = vec![SequenceRecord::default(); input.len() / 2 + 4];

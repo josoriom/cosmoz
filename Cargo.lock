@@ -3,8 +3,8 @@
 version = 4
 
 [[package]]
-name = "osmos"
+name = "cosmoz"
 version = "0.1.1"
 dependencies = [
- "osmos",
+ "cosmoz",
 ]

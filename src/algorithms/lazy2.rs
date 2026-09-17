@@ -1,8 +1,8 @@
-use super::{MatchFinder, hash_chain_finder::SearchMethod, level_table::LevelParameters};
 use crate::block::{
     repeat_offsets::RepeatOffsets, sequence_codes::MAX_MATCH_LENGTH,
     sequence_record::SequenceRecord,
 };
+use crate::levels::{MatchFinder, level_table::LevelParameters};
 use crate::simd::row_tag_match::{match_row_tags16, match_row_tags32};
 
 const TAG_BITS: u32 = 8;
@@ -22,7 +22,7 @@ const HASH_PRIME_FIVE: u64 = 0x00CF_1BBC_DCBB;
 const HASH_PRIME_SIX: u64 = 0xCF1B_BCDC_BF9B;
 const HASH_PRIME_SEVEN: u64 = 0x00CF_1BBC_DCBF_A563;
 
-pub struct RowHashFinder<'tables> {
+pub struct Lazy2Finder<'tables> {
     positions: &'tables mut [u32],
     tags: &'tables mut [u8],
     row_log: u32,
@@ -32,7 +32,6 @@ pub struct RowHashFinder<'tables> {
     hash_prime: u64,
     window_log: u8,
     search_attempts: usize,
-    search_method: SearchMethod,
     next_to_insert: usize,
     hash_cache: [u32; HASH_CACHE_SIZE],
     lazy_skipping: bool,
@@ -83,12 +82,11 @@ fn offset_base_for_distance(distance: usize) -> usize {
 
 const REPEAT_OFFSET_BASE: usize = 1;
 
-impl<'tables> RowHashFinder<'tables> {
+impl<'tables> Lazy2Finder<'tables> {
     pub fn new(
         hash_table: &'tables mut [u32],
         chain_table: &'tables mut [u32],
         parameters: LevelParameters,
-        search_method: SearchMethod,
     ) -> Self {
         let tags = tag_bytes_from_words(chain_table);
         let row_log = row_log_for(parameters);
@@ -112,7 +110,7 @@ impl<'tables> RowHashFinder<'tables> {
             _ => (HASH_PRIME_SEVEN, 56u32),
         };
         let row_entries = 1usize << row_log;
-        RowHashFinder {
+        Lazy2Finder {
             positions: &mut hash_table[..usable],
             tags: &mut tags[..usable],
             row_log,
@@ -122,7 +120,6 @@ impl<'tables> RowHashFinder<'tables> {
             hash_prime: prime,
             window_log: parameters.window_log,
             search_attempts: (1usize << parameters.search_log.min(31)).min(row_entries),
-            search_method,
             next_to_insert: 0,
             hash_cache: [0; HASH_CACHE_SIZE],
             lazy_skipping: false,
@@ -334,11 +331,6 @@ impl<'tables> RowHashFinder<'tables> {
     ) -> (usize, usize) {
         debug_assert!(block_start + INPUT_TAIL_RESERVE < input.len());
         let input_limit = input.len() - INPUT_TAIL_RESERVE;
-        let depth = match self.search_method {
-            SearchMethod::Greedy => 0,
-            SearchMethod::Lazy => 1,
-            SearchMethod::Lazy2 => 2,
-        };
 
         self.lazy_skipping = false;
         if self.next_to_insert < block_start.saturating_sub(UPDATE_SKIP_THRESHOLD) {
@@ -358,89 +350,75 @@ impl<'tables> RowHashFinder<'tables> {
 
             let repeat_length =
                 unsafe { Self::repeat_length_unchecked(input, position + 1, repeat_distance) };
-            let mut take_repeat_now = false;
             if repeat_length >= SHORTEST_MATCH {
                 match_length = repeat_length;
-                take_repeat_now = depth == 0;
             }
 
-            if !take_repeat_now {
-                let found = unsafe { self.search_unchecked(input, position) };
-                if found.length > match_length {
-                    match_length = found.length;
-                    offset_base = found.offset_base;
-                    start = position;
-                }
+            let found = unsafe { self.search_unchecked(input, position) };
+            if found.length > match_length {
+                match_length = found.length;
+                offset_base = found.offset_base;
+                start = position;
+            }
 
-                if match_length < SHORTEST_MATCH {
-                    let step = ((position - anchor) >> SEARCH_STRENGTH) + 1;
-                    position += step;
-                    self.lazy_skipping = step > LAZY_SKIPPING_STEP;
-                    continue;
-                }
+            if match_length < SHORTEST_MATCH {
+                let step = ((position - anchor) >> SEARCH_STRENGTH) + 1;
+                position += step;
+                self.lazy_skipping = step > LAZY_SKIPPING_STEP;
+                continue;
+            }
 
-                if depth >= 1 {
-                    while position < input_limit {
-                        position += 1;
-                        let repeat_length = unsafe {
-                            Self::repeat_length_unchecked(input, position, repeat_distance)
-                        };
-                        if repeat_length >= SHORTEST_MATCH {
-                            let repeat_gain = repeat_length as i64 * 3;
-                            let current_gain =
-                                match_length as i64 * 3 - highest_bit(offset_base) + 1;
-                            if repeat_gain > current_gain {
-                                match_length = repeat_length;
-                                offset_base = REPEAT_OFFSET_BASE;
-                                start = position;
-                            }
-                        }
-                        let found = unsafe { self.search_unchecked(input, position) };
-                        if found.length >= SHORTEST_MATCH {
-                            let found_gain =
-                                found.length as i64 * 4 - highest_bit(found.offset_base);
-                            let current_gain =
-                                match_length as i64 * 4 - highest_bit(offset_base) + 4;
-                            if found_gain > current_gain {
-                                match_length = found.length;
-                                offset_base = found.offset_base;
-                                start = position;
-                                continue;
-                            }
-                        }
-
-                        if depth == 2 && position < input_limit {
-                            position += 1;
-                            let repeat_length = unsafe {
-                                Self::repeat_length_unchecked(input, position, repeat_distance)
-                            };
-                            if repeat_length >= SHORTEST_MATCH {
-                                let repeat_gain = repeat_length as i64 * 4;
-                                let current_gain =
-                                    match_length as i64 * 4 - highest_bit(offset_base) + 1;
-                                if repeat_gain > current_gain {
-                                    match_length = repeat_length;
-                                    offset_base = REPEAT_OFFSET_BASE;
-                                    start = position;
-                                }
-                            }
-                            let found = unsafe { self.search_unchecked(input, position) };
-                            if found.length >= SHORTEST_MATCH {
-                                let found_gain =
-                                    found.length as i64 * 4 - highest_bit(found.offset_base);
-                                let current_gain =
-                                    match_length as i64 * 4 - highest_bit(offset_base) + 7;
-                                if found_gain > current_gain {
-                                    match_length = found.length;
-                                    offset_base = found.offset_base;
-                                    start = position;
-                                    continue;
-                                }
-                            }
-                        }
-                        break;
+            while position < input_limit {
+                position += 1;
+                let repeat_length =
+                    unsafe { Self::repeat_length_unchecked(input, position, repeat_distance) };
+                if repeat_length >= SHORTEST_MATCH {
+                    let repeat_gain = repeat_length as i64 * 3;
+                    let current_gain = match_length as i64 * 3 - highest_bit(offset_base) + 1;
+                    if repeat_gain > current_gain {
+                        match_length = repeat_length;
+                        offset_base = REPEAT_OFFSET_BASE;
+                        start = position;
                     }
                 }
+                let found = unsafe { self.search_unchecked(input, position) };
+                if found.length >= SHORTEST_MATCH {
+                    let found_gain = found.length as i64 * 4 - highest_bit(found.offset_base);
+                    let current_gain = match_length as i64 * 4 - highest_bit(offset_base) + 4;
+                    if found_gain > current_gain {
+                        match_length = found.length;
+                        offset_base = found.offset_base;
+                        start = position;
+                        continue;
+                    }
+                }
+
+                if position < input_limit {
+                    position += 1;
+                    let repeat_length =
+                        unsafe { Self::repeat_length_unchecked(input, position, repeat_distance) };
+                    if repeat_length >= SHORTEST_MATCH {
+                        let repeat_gain = repeat_length as i64 * 4;
+                        let current_gain = match_length as i64 * 4 - highest_bit(offset_base) + 1;
+                        if repeat_gain > current_gain {
+                            match_length = repeat_length;
+                            offset_base = REPEAT_OFFSET_BASE;
+                            start = position;
+                        }
+                    }
+                    let found = unsafe { self.search_unchecked(input, position) };
+                    if found.length >= SHORTEST_MATCH {
+                        let found_gain = found.length as i64 * 4 - highest_bit(found.offset_base);
+                        let current_gain = match_length as i64 * 4 - highest_bit(offset_base) + 7;
+                        if found_gain > current_gain {
+                            match_length = found.length;
+                            offset_base = found.offset_base;
+                            start = position;
+                            continue;
+                        }
+                    }
+                }
+                break;
             }
 
             let distance = if offset_base == REPEAT_OFFSET_BASE {
@@ -507,7 +485,7 @@ unsafe fn count_unchecked(input: &[u8], first: usize, second: usize, limit: usiz
     }
 }
 
-impl MatchFinder for RowHashFinder<'_> {
+impl MatchFinder for Lazy2Finder<'_> {
     fn reset(&mut self) {
         self.positions.fill(u32::MAX);
         self.tags.fill(0);
@@ -541,7 +519,7 @@ impl MatchFinder for RowHashFinder<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::match_finder::level_table::get_level_parameters;
+    use crate::levels::level_table::get_level_parameters;
 
     fn new_tables(parameters: LevelParameters) -> (Vec<u32>, Vec<u32>) {
         let hash_length = 1usize << parameters.hash_log;
@@ -599,7 +577,7 @@ mod tests {
     }
 
     #[test]
-    fn row_hash_finder_covers_the_whole_input_on_fuzz_shapes() {
+    fn lazy2_finder_covers_the_whole_input_on_fuzz_shapes() {
         let mut random_state = 0x9999_1111u32;
 
         for case in 0..200u32 {
@@ -634,16 +612,10 @@ mod tests {
             };
             random_state = next_pseudo_random_number(&mut random_state);
 
-            for (level, method) in [
-                (5, SearchMethod::Greedy),
-                (6, SearchMethod::Lazy),
-                (9, SearchMethod::Lazy2),
-                (12, SearchMethod::Lazy2),
-            ] {
+            for level in [9, 12] {
                 let parameters = get_level_parameters(level).unwrap();
                 let (mut hash_table, mut chain_table) = new_tables(parameters);
-                let mut finder =
-                    RowHashFinder::new(&mut hash_table, &mut chain_table, parameters, method);
+                let mut finder = Lazy2Finder::new(&mut hash_table, &mut chain_table, parameters);
 
                 let mut repeat_offsets = RepeatOffsets::new();
                 let mut decoder_history = RepeatOffsets::new();

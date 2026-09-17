@@ -1,10 +1,10 @@
 [package]
-name = "osmos"
+name = "cosmoz"
 version = "0.1.1"
 edition = "2024"
 license = "MIT"
 description = "Pure Rust zstd compressor and decompressor, zero dependencies, no_std core, native and wasm"
-repository = "https://github.com/josoriom/osmos"
+repository = "https://github.com/josoriom/cosmoz"
 readme = "README.md"
 keywords = ["zstd", "compression", "wasm"]
 categories = ["compression", "no-std", "wasm"]
@@ -29,7 +29,7 @@ encoder = []
 [dependencies]
 
 [dev-dependencies]
-osmos = { path = ".", features = ["std"] }
+cosmoz = { path = ".", features = ["std"] }
 
 [profile.release]
 opt-level = 3

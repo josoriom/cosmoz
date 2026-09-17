@@ -1,17 +1,17 @@
 use crate::error::DecodeError;
 
 pub const ZSTD_MAGIC_NUMBER: u32 = 0xFD2FB528;
-pub const OSMOS_MAGIC_NUMBER: u32 = 0x4F4D534F;
+pub const COSMOZ_MAGIC_NUMBER: u32 = 0x4F4D534F;
 pub const SKIPPABLE_MAGIC_MASK: u32 = 0xFFFFFFF0;
 pub const SKIPPABLE_MAGIC_BASE: u32 = 0x184D2A50;
 pub const MAX_WINDOW_SIZE: u64 = 1 << 31;
 pub const ZSTD_CHECKSUM_LENGTH: usize = 4;
-pub const OSMOS_CHECKSUM_LENGTH: usize = 8;
+pub const COSMOZ_CHECKSUM_LENGTH: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameFormat {
     Zstd,
-    Osmos,
+    Cosmoz,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,7 +32,7 @@ impl FrameHeader {
         }
         match self.format {
             FrameFormat::Zstd => ZSTD_CHECKSUM_LENGTH,
-            FrameFormat::Osmos => OSMOS_CHECKSUM_LENGTH,
+            FrameFormat::Cosmoz => COSMOZ_CHECKSUM_LENGTH,
         }
     }
 }
@@ -40,7 +40,7 @@ impl FrameHeader {
 fn read_frame_format(magic_number: u32) -> Result<FrameFormat, DecodeError> {
     match magic_number {
         ZSTD_MAGIC_NUMBER => Ok(FrameFormat::Zstd),
-        OSMOS_MAGIC_NUMBER => Ok(FrameFormat::Osmos),
+        COSMOZ_MAGIC_NUMBER => Ok(FrameFormat::Cosmoz),
         _ => Err(DecodeError::BadMagicNumber),
     }
 }
@@ -113,7 +113,7 @@ pub fn read_frame_header(input: &[u8]) -> Result<FrameHeader, DecodeError> {
         return Err(DecodeError::WindowTooLarge);
     }
 
-    if format == FrameFormat::Osmos && content_size.is_none() {
+    if format == FrameFormat::Cosmoz && content_size.is_none() {
         return Err(DecodeError::BadFrameHeader);
     }
 
@@ -294,13 +294,13 @@ mod tests {
     }
 
     #[test]
-    fn reads_osmos_frame_header() {
+    fn reads_cosmoz_frame_header() {
         let input = [0x4F, 0x53, 0x4D, 0x4F, 0x24, 0x40];
         let frame_header = read_frame_header(&input).unwrap();
         assert_eq!(
             frame_header,
             FrameHeader {
-                format: FrameFormat::Osmos,
+                format: FrameFormat::Cosmoz,
                 window_size: 64,
                 content_size: Some(64),
                 dictionary_id: 0,
@@ -321,16 +321,16 @@ mod tests {
             read_frame_header(&[0x28, 0xB5, 0x2F, 0xFD, 0x00, 0x58]).unwrap();
         assert_eq!(zstd_without_checksum.checksum_length(), 0);
 
-        let osmos_with_checksum = read_frame_header(&[0x4F, 0x53, 0x4D, 0x4F, 0x24, 0x40]).unwrap();
-        assert_eq!(osmos_with_checksum.checksum_length(), 8);
+        let cosmoz_with_checksum = read_frame_header(&[0x4F, 0x53, 0x4D, 0x4F, 0x24, 0x40]).unwrap();
+        assert_eq!(cosmoz_with_checksum.checksum_length(), 8);
 
-        let osmos_without_checksum =
+        let cosmoz_without_checksum =
             read_frame_header(&[0x4F, 0x53, 0x4D, 0x4F, 0x20, 0x0A]).unwrap();
-        assert_eq!(osmos_without_checksum.checksum_length(), 0);
+        assert_eq!(cosmoz_without_checksum.checksum_length(), 0);
     }
 
     #[test]
-    fn rejects_magic_one_bit_away_from_osmos() {
+    fn rejects_magic_one_bit_away_from_cosmoz() {
         let input = [0x4E, 0x53, 0x4D, 0x4F, 0x24, 0x40];
         assert_eq!(read_frame_header(&input), Err(DecodeError::BadMagicNumber));
     }

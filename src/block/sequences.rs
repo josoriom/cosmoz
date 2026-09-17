@@ -298,7 +298,7 @@ impl<'input, 'tables> SequenceDecoder<'input, 'tables> {
         sequence_count: usize,
         format: FrameFormat,
     ) -> Result<Self, DecodeError> {
-        if format == FrameFormat::Osmos && sequence_count >= 2 {
+        if format == FrameFormat::Cosmoz && sequence_count >= 2 {
             let length_bytes = input.get(0..4).ok_or(DecodeError::BadSequencesHeader)?;
             let first_stream_length = u32::from_le_bytes([
                 length_bytes[0],

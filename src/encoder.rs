@@ -1,9 +1,9 @@
+#[cfg(not(feature = "alloc"))]
+use crate::algorithms::fast::{FastFinder, HASH_TABLE_SIZE};
 #[cfg(feature = "alloc")]
 use crate::block::sequences::TableMode;
 #[cfg(feature = "parallel")]
 use crate::frame::chunk_index::ChunkEntry;
-#[cfg(not(feature = "alloc"))]
-use crate::match_finder::hash_table_finder::{HASH_TABLE_SIZE, HashTableFinder};
 use crate::{
     block::{
         block_writer::write_block,
@@ -16,10 +16,10 @@ use crate::{
     frame::{
         block_header::{BLOCK_HEADER_LENGTH, MAX_BLOCK_SIZE},
         chunk_index::{CHUNK_COUNT_LENGTH, CHUNK_ENTRY_LENGTH},
-        frame_header::{FrameFormat, OSMOS_CHECKSUM_LENGTH, ZSTD_CHECKSUM_LENGTH},
+        frame_header::{FrameFormat, COSMOZ_CHECKSUM_LENGTH, ZSTD_CHECKSUM_LENGTH},
         frame_writer::{MAX_FRAME_HEADER_LENGTH, write_frame_header},
     },
-    match_finder::{
+    levels::{
         AnyFinder, MAX_OFFSET_LOG, MatchFinder,
         level_table::{self, LevelParameters},
     },
@@ -36,7 +36,7 @@ pub const DEFAULT_CHUNK_SIZE: usize = MAX_CHUNK_SIZE;
 fn window_log_for_frame(format: FrameFormat, level_parameters: LevelParameters) -> u8 {
     match format {
         FrameFormat::Zstd => level_parameters.window_log,
-        FrameFormat::Osmos => level_parameters.window_log.min(MAX_OFFSET_LOG),
+        FrameFormat::Cosmoz => level_parameters.window_log.min(MAX_OFFSET_LOG),
     }
 }
 
@@ -58,9 +58,9 @@ impl CompressOptions {
         }
     }
 
-    pub const fn osmos() -> Self {
+    pub const fn cosmoz() -> Self {
         Self {
-            format: FrameFormat::Osmos,
+            format: FrameFormat::Cosmoz,
             with_checksum: true,
             chunk_size: DEFAULT_CHUNK_SIZE,
             level: 1,
@@ -88,7 +88,7 @@ pub struct EncodeWorkspace {
 impl EncodeWorkspace {
     pub const fn new() -> Self {
         Self {
-            level: level_table::MIN_LEVEL,
+            level: level_table::DEFAULT_LEVEL,
             level_parameters: level_table::level_one_parameters(),
             match_finder: AnyFinder::for_level(level_table::level_one_parameters()),
             repeat_offsets: RepeatOffsets {
@@ -123,7 +123,7 @@ impl EncodeWorkspace {
                 target_length: 0,
                 strategy: level_table::Strategy::Fast,
             },
-            match_finder: AnyFinder::Fast(HashTableFinder {
+            match_finder: AnyFinder::Fast(FastFinder {
                 positions: [0; HASH_TABLE_SIZE],
                 window_log: 0,
             }),
@@ -148,7 +148,7 @@ impl EncodeWorkspace {
 
     #[allow(dead_code)]
     pub(crate) fn write_initial_values_unchecked(&mut self) {
-        self.level = level_table::MIN_LEVEL;
+        self.level = level_table::DEFAULT_LEVEL;
         self.level_parameters = level_table::level_one_parameters();
         self.match_finder = AnyFinder::for_level(self.level_parameters);
         self.repeat_offsets = RepeatOffsets::new();
@@ -160,7 +160,7 @@ impl EncodeWorkspace {
     pub fn new() -> Self {
         let level_parameters = level_table::level_one_parameters();
         Self {
-            level: level_table::MIN_LEVEL,
+            level: level_table::DEFAULT_LEVEL,
             level_parameters,
             match_finder: AnyFinder::for_level(level_parameters),
             table_memory: alloc::vec::Vec::new().into_boxed_slice(),
@@ -193,7 +193,10 @@ impl Default for EncodeWorkspace {
 #[cfg(feature = "alloc")]
 impl EncodeWorkspace {
     pub fn new_boxed() -> alloc::boxed::Box<Self> {
-        build_boxed_workspace(level_table::MIN_LEVEL, level_table::level_one_parameters())
+        build_boxed_workspace(
+            level_table::DEFAULT_LEVEL,
+            level_table::level_one_parameters(),
+        )
     }
 
     pub fn new_boxed_for_level(level: u8) -> Result<alloc::boxed::Box<Self>, EncodeError> {
@@ -233,7 +236,7 @@ pub(crate) unsafe fn write_initial_values_unchecked(
         );
 
         let table_memory_length =
-            crate::match_finder::finder_tables::table_memory_length(level_parameters);
+            crate::levels::finder_tables::table_memory_length(level_parameters);
         let mut table_memory: alloc::boxed::Box<[u32]> =
             alloc::vec![0u32; table_memory_length].into_boxed_slice();
 
@@ -241,15 +244,10 @@ pub(crate) unsafe fn write_initial_values_unchecked(
         let table_memory_len = table_memory.len();
         let borrowed_memory: &'static mut [u32] =
             core::slice::from_raw_parts_mut(table_memory_ptr, table_memory_len);
-        let storage = crate::match_finder::finder_tables::split_table_storage(
-            borrowed_memory,
-            level_parameters,
-        );
-        let match_finder = crate::match_finder::AnyFinder::for_level_with_storage_at(
-            level,
-            level_parameters,
-            storage,
-        );
+        let storage =
+            crate::levels::finder_tables::split_table_storage(borrowed_memory, level_parameters);
+        let match_finder =
+            crate::levels::AnyFinder::for_level_with_storage(level_parameters, storage);
 
         core::ptr::write(
             core::ptr::addr_of_mut!((*target).match_finder),
@@ -289,7 +287,7 @@ pub(crate) unsafe fn write_initial_values_unchecked(
 #[cfg(all(test, feature = "alloc"))]
 mod new_boxed_tests {
     use super::*;
-    use crate::match_finder::hash_table_finder::HASH_TABLE_SIZE;
+    use crate::algorithms::fast::HASH_TABLE_SIZE;
 
     #[test]
     fn new_boxed_matches_new_field_by_field() {
@@ -311,22 +309,18 @@ mod new_boxed_tests {
                 );
                 assert_eq!(
                     boxed_workspace.table_memory.len(),
-                    crate::match_finder::finder_tables::table_memory_length(
+                    crate::levels::finder_tables::table_memory_length(
                         boxed_workspace.level_parameters
                     )
                 );
 
                 let boxed_finder = match &boxed_workspace.match_finder {
                     AnyFinder::Fast(finder) => finder,
-                    AnyFinder::DoubleFast(_) => panic!("level 1 workspace must select Fast"),
-                    AnyFinder::Chain(_) => panic!("level 1 workspace must select Fast"),
-                    AnyFinder::Row(_) => panic!("level 1 workspace must select Fast"),
+                    AnyFinder::Lazy2(_) => panic!("level 1 workspace must select Fast"),
                 };
                 let stack_finder = match &stack_workspace.match_finder {
                     AnyFinder::Fast(finder) => finder,
-                    AnyFinder::DoubleFast(_) => panic!("level 1 workspace must select Fast"),
-                    AnyFinder::Chain(_) => panic!("level 1 workspace must select Fast"),
-                    AnyFinder::Row(_) => panic!("level 1 workspace must select Fast"),
+                    AnyFinder::Lazy2(_) => panic!("level 1 workspace must select Fast"),
                 };
                 assert_eq!(boxed_finder.positions[0], stack_finder.positions[0]);
                 assert_eq!(
@@ -380,7 +374,7 @@ fn window_size_for_log(window_log: u8) -> usize {
     }
 }
 
-fn plan_osmos_chunking(input_length: usize, chunk_size: usize, window_log: u8) -> (usize, usize) {
+fn plan_cosmoz_chunking(input_length: usize, chunk_size: usize, window_log: u8) -> (usize, usize) {
     let configured_chunk_size = clamp_chunk_size(chunk_size);
     if input_length == 0 {
         return (configured_chunk_size, 1);
@@ -398,7 +392,7 @@ pub fn get_max_compressed_size(input_length: usize, options: &CompressOptions) -
     let checksum_size = if options.with_checksum {
         match options.format {
             FrameFormat::Zstd => ZSTD_CHECKSUM_LENGTH,
-            FrameFormat::Osmos => OSMOS_CHECKSUM_LENGTH,
+            FrameFormat::Cosmoz => COSMOZ_CHECKSUM_LENGTH,
         }
     } else {
         0
@@ -414,7 +408,7 @@ pub fn get_max_compressed_size(input_length: usize, options: &CompressOptions) -
             let blocks_size = input_length + block_count * BLOCK_HEADER_LENGTH;
             MAX_FRAME_HEADER_LENGTH + blocks_size + checksum_size
         }
-        FrameFormat::Osmos => {
+        FrameFormat::Cosmoz => {
             let chunk_size = clamp_chunk_size(options.chunk_size);
             let chunk_count = if input_length == 0 {
                 1
@@ -435,7 +429,7 @@ pub fn compress(
     options: &CompressOptions,
     workspace: &mut EncodeWorkspace,
 ) -> Result<usize, EncodeError> {
-    if !(level_table::MIN_LEVEL..=level_table::MAX_LEVEL).contains(&options.level) {
+    if !level_table::SUPPORTED_LEVELS.contains(&options.level) {
         return Err(EncodeError::BadOptions);
     }
     if options.level != workspace.level {
@@ -448,7 +442,7 @@ pub fn compress(
 
     match options.format {
         FrameFormat::Zstd => compress_zstd_frame(input, output, options, workspace),
-        FrameFormat::Osmos => compress_osmos_frame(input, output, options, workspace),
+        FrameFormat::Cosmoz => compress_cosmoz_frame(input, output, options, workspace),
     }
 }
 
@@ -487,19 +481,19 @@ fn compress_zstd_frame(
     Ok(position)
 }
 
-fn compress_osmos_frame(
+fn compress_cosmoz_frame(
     input: &[u8],
     output: &mut [u8],
     options: &CompressOptions,
     workspace: &mut EncodeWorkspace,
 ) -> Result<usize, EncodeError> {
-    let window_log = window_log_for_frame(FrameFormat::Osmos, workspace.level_parameters);
+    let window_log = window_log_for_frame(FrameFormat::Cosmoz, workspace.level_parameters);
     let (chunk_size, chunk_count) =
-        plan_osmos_chunking(input.len(), options.chunk_size, window_log);
+        plan_cosmoz_chunking(input.len(), options.chunk_size, window_log);
 
     let header_length = write_frame_header(
         output,
-        FrameFormat::Osmos,
+        FrameFormat::Cosmoz,
         input.len() as u64,
         window_log,
         options.with_checksum,
@@ -577,7 +571,7 @@ fn compress_osmos_frame(
                 .get_mut(position..)
                 .ok_or(EncodeError::OutputTooSmall)?;
             let compressed_length =
-                compress_chunk(chunk_content, FrameFormat::Osmos, chunk_output, workspace)?;
+                compress_chunk(chunk_content, FrameFormat::Cosmoz, chunk_output, workspace)?;
 
             let compressed_length_u32 =
                 u32::try_from(compressed_length).map_err(|_| EncodeError::InputTooLarge)?;
@@ -602,7 +596,7 @@ fn compress_osmos_frame(
         let checksum_output = output
             .get_mut(position..)
             .ok_or(EncodeError::OutputTooSmall)?;
-        position += write_checksum(checksum_output, FrameFormat::Osmos, hash)?;
+        position += write_checksum(checksum_output, FrameFormat::Cosmoz, hash)?;
     }
 
     Ok(position)
@@ -731,9 +725,9 @@ mod tests {
     }
 
     #[test]
-    fn raw_osmos_frame_round_trips() {
+    fn raw_cosmoz_frame_round_trips() {
         let text = build_deterministic_text(2 * 1024 * 1024 + 512 * 1024);
-        let mut options = CompressOptions::osmos();
+        let mut options = CompressOptions::cosmoz();
         options.chunk_size = 1024 * 1024;
         let chunk_count = text.len().div_ceil(options.chunk_size);
         assert_eq!(chunk_count, 3);
@@ -776,15 +770,15 @@ mod tests {
             println!("zstd CLI not found on PATH, skipping CLI check");
         }
 
-        let osmos_options = CompressOptions::osmos();
-        let mut osmos_output = vec![0u8; get_max_compressed_size(0, &osmos_options)];
-        let osmos_written =
-            compress(&[], &mut osmos_output, &osmos_options, &mut workspace).unwrap();
-        osmos_output.truncate(osmos_written);
+        let cosmoz_options = CompressOptions::cosmoz();
+        let mut cosmoz_output = vec![0u8; get_max_compressed_size(0, &cosmoz_options)];
+        let cosmoz_written =
+            compress(&[], &mut cosmoz_output, &cosmoz_options, &mut workspace).unwrap();
+        cosmoz_output.truncate(cosmoz_written);
 
-        let osmos_decoded_length =
-            decompress(&osmos_output, &mut decoded, &mut decode_workspace).unwrap();
-        assert_eq!(osmos_decoded_length, 0);
+        let cosmoz_decoded_length =
+            decompress(&cosmoz_output, &mut decoded, &mut decode_workspace).unwrap();
+        assert_eq!(cosmoz_decoded_length, 0);
     }
 
     #[test]
@@ -821,8 +815,8 @@ mod tests {
 
     #[test]
     fn level_one_output_is_unchanged() {
-        const GOLDEN_LEVEL_ONE_HASH: u64 = 0xc641_9933_b376_6a9c;
-        const GOLDEN_LEVEL_ONE_LENGTH: usize = 2_173_689;
+        const GOLDEN_LEVEL_ONE_HASH: u64 = 0x0170_6775_76fb_72c8;
+        const GOLDEN_LEVEL_ONE_LENGTH: usize = 2_262_579;
 
         let input = std::fs::read(
             "/Users/josorio/github/phenological/ionic/crates/parser/data/mzml/small.pwiz.1.1.mzML",
@@ -917,7 +911,7 @@ mod tests {
             let input = generate_incompressible_bytes(length, length as u64 + 1);
             for &chunk_size in &chunk_sizes {
                 let options = CompressOptions {
-                    format: FrameFormat::Osmos,
+                    format: FrameFormat::Cosmoz,
                     with_checksum: true,
                     chunk_size,
                     level: 1,
@@ -943,7 +937,7 @@ mod tests {
     #[test]
     fn merges_two_chunks_into_one_when_the_merged_chunk_fits_the_window() {
         let text = build_deterministic_text(6000);
-        let mut options = CompressOptions::osmos();
+        let mut options = CompressOptions::cosmoz();
         options.chunk_size = 4096;
         let split_chunk_count = text.len().div_ceil(options.chunk_size);
         assert_eq!(split_chunk_count, 2);
@@ -965,7 +959,7 @@ mod tests {
     #[test]
     fn keeps_the_split_when_the_merged_chunk_would_need_a_larger_window() {
         let text = build_deterministic_text(1_400_000);
-        let mut options = CompressOptions::osmos();
+        let mut options = CompressOptions::cosmoz();
         options.chunk_size = 700_000;
         options.level = 1;
         let split_chunk_count = text.len().div_ceil(options.chunk_size);
@@ -987,9 +981,9 @@ mod tests {
     }
 
     #[test]
-    fn single_chunk_osmos_frame_round_trips_through_the_parallel_decoder() {
+    fn single_chunk_cosmoz_frame_round_trips_through_the_parallel_decoder() {
         let text = build_deterministic_text(6000);
-        let mut options = CompressOptions::osmos();
+        let mut options = CompressOptions::cosmoz();
         options.chunk_size = 4096;
 
         let mut workspace = EncodeWorkspace::new_boxed();
@@ -1008,7 +1002,7 @@ mod tests {
 
     #[test]
     #[ignore]
-    fn report_osmos_and_zstd_sizes_on_bench_files() {
+    fn report_cosmoz_and_zstd_sizes_on_bench_files() {
         let pwiz = std::fs::read(
             "/Users/josorio/github/phenological/ionic/crates/parser/data/mzml/small.pwiz.1.1.mzML",
         )
@@ -1018,20 +1012,20 @@ mod tests {
         )
         .unwrap();
 
-        for level in [1u8, 6, 9, 12] {
+        for level in level_table::SUPPORTED_LEVELS {
             for (name, input) in [("pwiz", &pwiz), ("iron", &iron)] {
-                let mut osmos_options = CompressOptions::osmos();
-                osmos_options.level = level;
+                let mut cosmoz_options = CompressOptions::cosmoz();
+                cosmoz_options.level = level;
                 let mut zstd_options = CompressOptions::zstd();
                 zstd_options.level = level;
 
                 let mut workspace = EncodeWorkspace::new_boxed_for_level(level).unwrap();
 
-                let mut osmos_output =
-                    vec![0u8; get_max_compressed_size(input.len(), &osmos_options)];
-                let osmos_written =
-                    compress(input, &mut osmos_output, &osmos_options, &mut workspace).unwrap();
-                let osmos_chunk_count = read_chunk_count(&osmos_output[..osmos_written]);
+                let mut cosmoz_output =
+                    vec![0u8; get_max_compressed_size(input.len(), &cosmoz_options)];
+                let cosmoz_written =
+                    compress(input, &mut cosmoz_output, &cosmoz_options, &mut workspace).unwrap();
+                let cosmoz_chunk_count = read_chunk_count(&cosmoz_output[..cosmoz_written]);
 
                 let mut zstd_output =
                     vec![0u8; get_max_compressed_size(input.len(), &zstd_options)];
@@ -1039,15 +1033,15 @@ mod tests {
                     compress(input, &mut zstd_output, &zstd_options, &mut workspace).unwrap();
 
                 println!(
-                    "{name} level {level}: osmos {osmos_written} bytes (chunk_count {osmos_chunk_count}), zstd {zstd_written} bytes"
+                    "{name} level {level}: cosmoz {cosmoz_written} bytes (chunk_count {cosmoz_chunk_count}), zstd {zstd_written} bytes"
                 );
             }
         }
     }
 
     #[test]
-    fn empty_input_osmos_chunk_count_is_still_one() {
-        let options = CompressOptions::osmos();
+    fn empty_input_cosmoz_chunk_count_is_still_one() {
+        let options = CompressOptions::cosmoz();
         let mut workspace = EncodeWorkspace::new_boxed();
         let mut output = vec![0u8; get_max_compressed_size(0, &options)];
         let written = compress(&[], &mut output, &options, &mut workspace).unwrap();

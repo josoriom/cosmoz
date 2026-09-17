@@ -3,6 +3,8 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
+#[cfg(feature = "encoder")]
+pub mod algorithms;
 pub mod bits;
 pub mod block;
 pub mod decoder;
@@ -14,7 +16,7 @@ pub mod error;
 pub mod frame;
 pub mod hash;
 #[cfg(feature = "encoder")]
-pub mod match_finder;
+pub mod levels;
 #[cfg(feature = "parallel")]
 pub mod parallel_decoder;
 #[cfg(all(feature = "parallel", feature = "encoder"))]

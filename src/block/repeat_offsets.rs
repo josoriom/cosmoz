@@ -69,6 +69,7 @@ impl Default for RepeatOffsets {
 }
 
 impl RepeatOffsets {
+    #[inline]
     pub fn get_offset_value(&mut self, offset: u32, literal_length: u32) -> u32 {
         debug_assert!(offset != 0, "offset must not be zero");
 
