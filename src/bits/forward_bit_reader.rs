@@ -1,32 +1,33 @@
-pub struct ForwardBitReader<'input> {
+pub(crate) struct ForwardBitReader<'input> {
     input: &'input [u8],
     bit_position: usize,
 }
 
 impl<'input> ForwardBitReader<'input> {
-    pub fn new(input: &'input [u8]) -> Self {
+    pub(crate) fn new(input: &'input [u8]) -> Self {
         Self {
             input,
             bit_position: 0,
         }
     }
 
-    pub fn read_bits(&mut self, count: usize) -> u64 {
+    pub(crate) fn read_bits(&mut self, count: usize) -> u64 {
         let value = self.peek_bits(count);
         self.bit_position = self.bit_position.saturating_add(count);
         value
     }
 
-    pub fn peek_bits(&self, count: usize) -> u64 {
+    pub(crate) fn peek_bits(&self, count: usize) -> u64 {
         debug_assert!(count <= 56);
         extract_bits_starting_at(self.input, self.bit_position, count)
     }
 
-    pub fn skip_bits(&mut self, count: usize) {
+    #[allow(dead_code)]
+    pub(crate) fn skip_bits(&mut self, count: usize) {
         self.bit_position = self.bit_position.saturating_add(count);
     }
 
-    pub fn bytes_used(&self) -> usize {
+    pub(crate) fn bytes_used(&self) -> usize {
         self.bit_position.div_ceil(8)
     }
 }

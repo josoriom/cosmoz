@@ -1,4 +1,4 @@
 #[cfg(feature = "checksum")]
-pub mod xxhash3;
+pub(crate) mod xxhash3;
 #[cfg(feature = "checksum")]
-pub mod xxhash64;
+pub(crate) mod xxhash64;

@@ -1,7 +1,7 @@
 use crate::error::DecodeError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReloadStatus {
+pub(crate) enum ReloadStatus {
     Unfinished,
     EndOfBuffer,
     Completed,
@@ -9,7 +9,7 @@ pub enum ReloadStatus {
 }
 
 #[derive(Clone, Copy)]
-pub struct FastBitReader {
+pub(crate) struct FastBitReader {
     container: u64,
     bits_consumed: u32,
     position: *const u8,
@@ -69,7 +69,7 @@ impl FastBitReader {
     }
 
     #[inline(always)]
-    pub fn peek(&self, count: u32) -> u64 {
+    pub(crate) fn peek(&self, count: u32) -> u64 {
         debug_assert!(count <= 56);
         let shift = 64u32.wrapping_sub(self.bits_consumed).wrapping_sub(count) & 63;
         let mask = (1u64 << count).wrapping_sub(1);
@@ -77,12 +77,12 @@ impl FastBitReader {
     }
 
     #[inline(always)]
-    pub fn skip(&mut self, count: u32) {
+    pub(crate) fn skip(&mut self, count: u32) {
         self.bits_consumed += count;
     }
 
     #[inline(always)]
-    pub fn read(&mut self, count: u32) -> u64 {
+    pub(crate) fn read(&mut self, count: u32) -> u64 {
         let value = self.peek(count);
         self.skip(count);
         value
@@ -131,11 +131,11 @@ impl FastBitReader {
         self.bits_consumed = bits_consumed;
     }
 
-    pub fn is_finished(&self) -> bool {
+    pub(crate) fn is_finished(&self) -> bool {
         self.position == self.start && self.bits_consumed == 64
     }
 
-    pub fn bits_left(&self) -> usize {
+    pub(crate) fn bits_left(&self) -> usize {
         let bytes_available = unsafe { self.position.offset_from(self.start) } as usize;
         let container_bits = 64u32.saturating_sub(self.bits_consumed) as usize;
         bytes_available * 8 + container_bits

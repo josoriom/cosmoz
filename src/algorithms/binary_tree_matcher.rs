@@ -1,9 +1,9 @@
 use crate::levels::level_table::LevelParameters;
 
-pub const MAX_HASH3_LOG: u8 = 17;
-pub const LONGEST_OPTIMAL_MATCH: u32 = 1 << 12;
-pub const INPUT_TAIL_RESERVE: usize = 8;
-pub const WINDOW_START_INDEX: u32 = 2;
+pub(crate) const MAX_HASH3_LOG: u8 = 17;
+pub(crate) const LONGEST_OPTIMAL_MATCH: u32 = 1 << 12;
+pub(crate) const INPUT_TAIL_RESERVE: usize = 8;
+pub(crate) const WINDOW_START_INDEX: u32 = 2;
 const PRIME_THREE_BYTES: u32 = 506_832_829;
 const PRIME_FOUR_BYTES: u32 = 2_654_435_761;
 const MAX_HASH3_DISTANCE: u32 = 1 << 18;
@@ -14,12 +14,12 @@ const LONG_MATCH_SKIP_LIMIT: u32 = 192;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
-pub struct MatchCandidate {
+pub(crate) struct MatchCandidate {
     pub offset_base: u32,
     pub length: u32,
 }
 
-pub struct BinaryTreeMatcher<'tables> {
+pub(crate) struct BinaryTreeMatcher<'tables> {
     hash_table: &'tables mut [u32],
     tree_table: &'tables mut [u32],
     hash3_table: &'tables mut [u32],
@@ -83,7 +83,7 @@ unsafe fn count_unchecked(input: &[u8], first: usize, second: usize) -> usize {
 }
 
 impl<'tables> BinaryTreeMatcher<'tables> {
-    pub fn new_over_zeroed_tables(
+    pub(crate) fn new_over_zeroed_tables(
         hash_table: &'tables mut [u32],
         tree_table: &'tables mut [u32],
         hash3_table: &'tables mut [u32],
@@ -105,11 +105,11 @@ impl<'tables> BinaryTreeMatcher<'tables> {
         }
     }
 
-    pub fn is_usable(&self) -> bool {
+    pub(crate) fn is_usable(&self) -> bool {
         self.hash_log > 0
     }
 
-    pub fn reset(&mut self, parameters: LevelParameters) {
+    pub(crate) fn reset(&mut self, parameters: LevelParameters) {
         let hash_log = parameters.hash_log as u32;
         let tree_log = parameters.chain_log as u32;
         let hash3_log = parameters.window_log.min(MAX_HASH3_LOG) as u32;
@@ -138,11 +138,11 @@ impl<'tables> BinaryTreeMatcher<'tables> {
         self.next_to_update = WINDOW_START_INDEX;
     }
 
-    pub fn sufficient_length(&self) -> u32 {
+    pub(crate) fn sufficient_length(&self) -> u32 {
         self.sufficient_length
     }
 
-    pub fn next_to_update(&self) -> u32 {
+    pub(crate) fn next_to_update(&self) -> u32 {
         self.next_to_update
     }
 
@@ -156,11 +156,11 @@ impl<'tables> BinaryTreeMatcher<'tables> {
         (index - self.index_offset) as usize
     }
 
-    pub fn is_history_start(&self, position: usize) -> bool {
+    pub(crate) fn is_history_start(&self, position: usize) -> bool {
         self.index_of(position) == self.lowest_index
     }
 
-    pub fn prepare_for_block(&mut self, block_start: usize) {
+    pub(crate) fn prepare_for_block(&mut self, block_start: usize) {
         let max_distance = 1u32 << self.window_log;
         let current = self.index_of(block_start);
         if current > max_distance {
@@ -173,7 +173,7 @@ impl<'tables> BinaryTreeMatcher<'tables> {
         }
     }
 
-    pub fn forget_history_before(&mut self, block_length: usize) {
+    pub(crate) fn forget_history_before(&mut self, block_length: usize) {
         self.index_offset += block_length as u32;
         self.lowest_index += block_length as u32;
         self.next_to_update = self.lowest_index;

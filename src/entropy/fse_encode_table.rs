@@ -5,12 +5,12 @@ use crate::{
 };
 
 #[derive(Clone, Copy, Default)]
-pub struct FseSymbolTransform {
+pub(crate) struct FseSymbolTransform {
     pub bits_delta: u32,
     pub find_state_delta: i32,
 }
 
-pub struct FseEncodeTable {
+pub(crate) struct FseEncodeTable {
     pub next_state: [u16; MAX_TABLE_SIZE],
     pub transforms: [FseSymbolTransform; MAX_SYMBOL_COUNT],
     pub normalized_counts: [i16; MAX_SYMBOL_COUNT],
@@ -19,7 +19,7 @@ pub struct FseEncodeTable {
 }
 
 impl FseEncodeTable {
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             next_state: [0u16; MAX_TABLE_SIZE],
             transforms: [FseSymbolTransform {
@@ -39,12 +39,12 @@ impl Default for FseEncodeTable {
     }
 }
 
-pub struct FseEncodeState {
+pub(crate) struct FseEncodeState {
     pub state: usize,
 }
 
 impl FseEncodeState {
-    pub fn new(table: &FseEncodeTable, first_symbol: u8) -> Self {
+    pub(crate) fn new(table: &FseEncodeTable, first_symbol: u8) -> Self {
         let transform = &table.transforms[first_symbol as usize];
         let bits_out = ((transform.bits_delta.wrapping_add(1u32 << 15)) >> 16) as usize;
         let shifted = ((bits_out as u32) << 16).wrapping_sub(transform.bits_delta);
@@ -53,7 +53,7 @@ impl FseEncodeState {
         Self { state }
     }
 
-    pub fn encode_symbol(
+    pub(crate) fn encode_symbol(
         &mut self,
         writer: &mut BackwardBitWriter,
         table: &FseEncodeTable,
@@ -67,7 +67,7 @@ impl FseEncodeState {
         Ok(())
     }
 
-    pub fn flush(
+    pub(crate) fn flush(
         &self,
         writer: &mut BackwardBitWriter,
         table: &FseEncodeTable,
@@ -76,7 +76,7 @@ impl FseEncodeState {
     }
 }
 
-pub fn pick_accuracy_log(
+pub(crate) fn pick_accuracy_log(
     total_count: usize,
     symbol_count: usize,
     max_accuracy_log: usize,
@@ -107,7 +107,7 @@ pub fn pick_accuracy_log(
     accuracy_log
 }
 
-pub fn normalize_counts(
+pub(crate) fn normalize_counts(
     counts: &[u32],
     total_count: usize,
     accuracy_log: usize,
@@ -218,7 +218,7 @@ fn largest_symbol_is_valid(counts: &[u32], normalized_counts: &[i16]) -> bool {
     normalized_counts[find_largest_count_symbol(counts)] > 0
 }
 
-pub fn build_fse_encode_table(
+pub(crate) fn build_fse_encode_table(
     normalized_counts: &[i16],
     accuracy_log: usize,
     table: &mut FseEncodeTable,
@@ -337,7 +337,7 @@ fn count_bits_needed(value: usize) -> usize {
     (usize::BITS - value.leading_zeros()) as usize
 }
 
-pub fn write_fse_table_description(
+pub(crate) fn write_fse_table_description(
     output: &mut [u8],
     table: &FseEncodeTable,
 ) -> Result<usize, EncodeError> {

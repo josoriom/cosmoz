@@ -1,8 +1,9 @@
+#[cfg(any(test, feature = "wasm-exports"))]
+use crate::frame::chunk_index::{CHUNK_COUNT_LENGTH, CHUNK_ENTRY_LENGTH, ChunkEntry};
 use crate::{
     encode_error::EncodeError,
     frame::{
         block_header::{BLOCK_HEADER_LENGTH, BlockType, MAX_BLOCK_SIZE},
-        chunk_index::{CHUNK_COUNT_LENGTH, CHUNK_ENTRY_LENGTH, ChunkEntry},
         frame_header::{
             COSMOZ_CHECKSUM_LENGTH, COSMOZ_MAGIC_NUMBER, FrameFormat, ZSTD_CHECKSUM_LENGTH,
             ZSTD_MAGIC_NUMBER,
@@ -10,9 +11,9 @@ use crate::{
     },
 };
 
-pub const MAX_FRAME_HEADER_LENGTH: usize = 14;
+pub(crate) const MAX_FRAME_HEADER_LENGTH: usize = 14;
 
-pub fn write_frame_header(
+pub(crate) fn write_frame_header(
     output: &mut [u8],
     format: FrameFormat,
     content_size: Option<u64>,
@@ -64,7 +65,7 @@ pub fn write_frame_header(
     Ok(header_length)
 }
 
-pub fn write_block_header(
+pub(crate) fn write_block_header(
     output: &mut [u8],
     block_type: BlockType,
     block_size: usize,
@@ -86,7 +87,8 @@ pub fn write_block_header(
     Ok(BLOCK_HEADER_LENGTH)
 }
 
-pub fn write_chunk_index(output: &mut [u8], entries: &[ChunkEntry]) -> Result<usize, EncodeError> {
+#[cfg(any(test, feature = "wasm-exports"))]
+pub(crate) fn write_chunk_index(output: &mut [u8], entries: &[ChunkEntry]) -> Result<usize, EncodeError> {
     if entries.is_empty() {
         return Err(EncodeError::BadOptions);
     }
@@ -129,7 +131,7 @@ pub fn write_chunk_index(output: &mut [u8], entries: &[ChunkEntry]) -> Result<us
     Ok(index_length)
 }
 
-pub fn write_checksum(
+pub(crate) fn write_checksum(
     output: &mut [u8],
     format: FrameFormat,
     hash: u64,

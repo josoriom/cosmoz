@@ -28,7 +28,7 @@ fn chunk_bounds(input_length: usize, chunk_size: usize, chunk_number: usize) -> 
     (chunk_start, chunk_end)
 }
 
-pub fn compress_chunks_in_parallel(
+pub(crate) fn compress_chunks_in_parallel(
     input: &[u8],
     chunk_size: usize,
     level: u8,

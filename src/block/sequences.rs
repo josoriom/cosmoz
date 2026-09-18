@@ -21,14 +21,14 @@ use crate::{
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum TableMode {
+pub(crate) enum TableMode {
     Predefined,
     Rle,
     Compressed,
     Repeat,
 }
 
-pub struct SequencesHeader {
+pub(crate) struct SequencesHeader {
     pub sequence_count: usize,
     pub literal_length_mode: TableMode,
     pub offset_mode: TableMode,
@@ -36,13 +36,13 @@ pub struct SequencesHeader {
     pub header_length: usize,
 }
 
-pub struct Sequence {
+pub(crate) struct Sequence {
     pub literal_length: u32,
     pub match_length: u32,
     pub offset: u32,
 }
 
-pub struct SequenceTables {
+pub(crate) struct SequenceTables {
     pub literal_length: FseDecodeTable,
     pub offset: FseDecodeTable,
     pub match_length: FseDecodeTable,
@@ -52,7 +52,7 @@ pub struct SequenceTables {
 }
 
 impl SequenceTables {
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             literal_length: FseDecodeTable::new(),
             offset: FseDecodeTable::new(),
@@ -79,7 +79,7 @@ fn table_mode_from_bits(bits: u8) -> TableMode {
     }
 }
 
-pub fn read_sequences_header(input: &[u8]) -> Result<SequencesHeader, DecodeError> {
+pub(crate) fn read_sequences_header(input: &[u8]) -> Result<SequencesHeader, DecodeError> {
     let byte0 = *input.first().ok_or(DecodeError::InputTooShort)?;
 
     let (sequence_count, count_length) = if byte0 < 128 {
@@ -160,7 +160,7 @@ fn read_table_for_mode(
     }
 }
 
-pub fn read_sequence_tables(
+pub(crate) fn read_sequence_tables(
     input: &[u8],
     header: &SequencesHeader,
     tables: &mut SequenceTables,
@@ -284,7 +284,7 @@ impl<'input> SequenceStream<'input> {
     }
 }
 
-pub struct SequenceDecoder<'input, 'tables> {
+pub(crate) struct SequenceDecoder<'input, 'tables> {
     tables: &'tables SequenceTables,
     first_stream: SequenceStream<'input>,
     second_stream: Option<SequenceStream<'input>>,
@@ -292,7 +292,7 @@ pub struct SequenceDecoder<'input, 'tables> {
 }
 
 impl<'input, 'tables> SequenceDecoder<'input, 'tables> {
-    pub fn new(
+    pub(crate) fn new(
         input: &'input [u8],
         tables: &'tables SequenceTables,
         sequence_count: usize,
@@ -338,7 +338,7 @@ impl<'input, 'tables> SequenceDecoder<'input, 'tables> {
         })
     }
 
-    pub fn is_finished(&self) -> bool {
+    pub(crate) fn is_finished(&self) -> bool {
         let second_finished = match &self.second_stream {
             Some(second_stream) => second_stream.is_finished(),
             None => true,
@@ -346,7 +346,7 @@ impl<'input, 'tables> SequenceDecoder<'input, 'tables> {
         self.first_stream.is_finished() && second_finished
     }
 
-    pub fn next_sequence(
+    pub(crate) fn next_sequence(
         &mut self,
         repeat_offsets: &mut RepeatOffsets,
     ) -> Option<Result<Sequence, DecodeError>> {

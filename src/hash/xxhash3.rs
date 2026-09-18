@@ -9,7 +9,7 @@ const PRIME_64_5: u64 = 0x27D4EB2F165667C5;
 const PRIME_MIX_1: u64 = 0x165667919E3779F9;
 const PRIME_MIX_2: u64 = 0x9FB21C651E98DF25;
 
-pub const SECRET_LENGTH: usize = 192;
+pub(crate) const SECRET_LENGTH: usize = 192;
 
 const DEFAULT_SECRET: [u8; SECRET_LENGTH] = [
     0xb8, 0xfe, 0x6c, 0x39, 0x23, 0xa4, 0x4b, 0xbe, 0x7c, 0x01, 0x81, 0x2c, 0xf7, 0x21, 0xad, 0x1c,
@@ -46,7 +46,7 @@ const INITIAL_ACCUMULATORS: [u64; 8] = [
     PRIME_32_3, PRIME_64_1, PRIME_64_2, PRIME_64_3, PRIME_64_4, PRIME_32_2, PRIME_64_5, PRIME_32_1,
 ];
 
-pub struct XxHash3 {
+pub(crate) struct XxHash3 {
     accumulators: [u64; 8],
     buffer: [u8; INTERNAL_BUFFER_LENGTH],
     buffered_length: usize,
@@ -55,7 +55,7 @@ pub struct XxHash3 {
 }
 
 impl XxHash3 {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         XxHash3 {
             accumulators: INITIAL_ACCUMULATORS,
             buffer: [0; INTERNAL_BUFFER_LENGTH],
@@ -65,7 +65,7 @@ impl XxHash3 {
         }
     }
 
-    pub fn update(&mut self, input: &[u8]) {
+    pub(crate) fn update(&mut self, input: &[u8]) {
         if input.is_empty() {
             return;
         }
@@ -116,7 +116,7 @@ impl XxHash3 {
         self.buffered_length = remaining_input.len();
     }
 
-    pub fn finish(&self) -> u64 {
+    pub(crate) fn finish(&self) -> u64 {
         if self.total_length > MIDSIZE_MAX as u64 {
             return hash_long_input(
                 self.accumulators,
@@ -144,7 +144,8 @@ impl Default for XxHash3 {
     }
 }
 
-pub fn hash_bytes(input: &[u8]) -> u64 {
+#[cfg(any(feature = "compression", feature = "wasm-exports"))]
+pub(crate) fn hash_bytes(input: &[u8]) -> u64 {
     let mut hasher = XxHash3::new();
     hasher.update(input);
     hasher.finish()

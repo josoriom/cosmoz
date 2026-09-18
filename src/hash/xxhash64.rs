@@ -6,7 +6,7 @@ const PRIME_5: u64 = 0x27D4EB2F165667C5;
 
 const STRIPE_LENGTH: usize = 32;
 
-pub struct XxHash64 {
+pub(crate) struct XxHash64 {
     seed: u64,
     lane_1: u64,
     lane_2: u64,
@@ -18,7 +18,7 @@ pub struct XxHash64 {
 }
 
 impl XxHash64 {
-    pub fn new(seed: u64) -> Self {
+    pub(crate) fn new(seed: u64) -> Self {
         XxHash64 {
             seed,
             lane_1: seed.wrapping_add(PRIME_1).wrapping_add(PRIME_2),
@@ -31,7 +31,7 @@ impl XxHash64 {
         }
     }
 
-    pub fn update(&mut self, input: &[u8]) {
+    pub(crate) fn update(&mut self, input: &[u8]) {
         self.total_length = self.total_length.wrapping_add(input.len() as u64);
         let mut remaining_input = input;
 
@@ -74,7 +74,7 @@ impl XxHash64 {
         self.lane_4 = mix_round(self.lane_4, word_4);
     }
 
-    pub fn finish(&self) -> u64 {
+    pub(crate) fn finish(&self) -> u64 {
         let mut accumulator = if self.total_length >= STRIPE_LENGTH as u64 {
             let converged = self
                 .lane_1
@@ -121,7 +121,8 @@ impl XxHash64 {
     }
 }
 
-pub fn hash_bytes(input: &[u8], seed: u64) -> u64 {
+#[cfg(any(feature = "compression", feature = "wasm-exports"))]
+pub(crate) fn hash_bytes(input: &[u8], seed: u64) -> u64 {
     let mut hasher = XxHash64::new(seed);
     hasher.update(input);
     hasher.finish()

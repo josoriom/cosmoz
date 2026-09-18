@@ -1,4 +1,5 @@
-pub fn match_row_tags16(tags: &[u8; 16], target: u8) -> u16 {
+#[cfg(feature = "compression")]
+pub(crate) fn match_row_tags16(tags: &[u8; 16], target: u8) -> u16 {
     #[cfg(target_arch = "aarch64")]
     {
         match_row_tags16_neon(tags, target)
@@ -21,7 +22,8 @@ pub fn match_row_tags16(tags: &[u8; 16], target: u8) -> u16 {
     }
 }
 
-pub fn match_row_tags32(tags: &[u8; 32], target: u8) -> u32 {
+#[cfg(feature = "compression")]
+pub(crate) fn match_row_tags32(tags: &[u8; 32], target: u8) -> u32 {
     let mut low = [0u8; 16];
     let mut high = [0u8; 16];
     low.copy_from_slice(&tags[..16]);
@@ -31,6 +33,7 @@ pub fn match_row_tags32(tags: &[u8; 32], target: u8) -> u32 {
     low_mask | (high_mask << 16)
 }
 
+#[allow(dead_code)]
 fn match_row_tags16_scalar(tags: &[u8; 16], target: u8) -> u16 {
     let mut mask = 0u16;
     let mut index = 0usize;
@@ -44,6 +47,7 @@ fn match_row_tags16_scalar(tags: &[u8; 16], target: u8) -> u16 {
 }
 
 #[cfg(target_arch = "aarch64")]
+#[cfg(feature = "compression")]
 fn match_row_tags16_neon(tags: &[u8; 16], target: u8) -> u16 {
     use core::arch::aarch64::{
         vandq_u8, vceqq_u8, vdupq_n_u8, vget_high_u8, vget_lane_u16, vget_low_u8, vld1q_u8,
@@ -94,7 +98,8 @@ fn match_row_tags16_simd128(tags: &[u8; 16], target: u8) -> u16 {
     }
 }
 
-pub fn run_self_tests() -> Option<u32> {
+#[cfg(any(test, feature = "wasm-exports"))]
+pub(crate) fn run_self_tests() -> Option<u32> {
     let mut tags = [0u8; 32];
     let mut state: u32 = 0x1357_9BDF;
     let mut fill_index = 0usize;

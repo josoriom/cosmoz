@@ -8,7 +8,7 @@ use crate::levels::{
     level_table::{LevelParameters, get_level_parameters_for_input_length},
 };
 
-pub const OPTIMAL_TABLE_LENGTH: usize = LONGEST_OPTIMAL_MATCH as usize + 3;
+pub(crate) const OPTIMAL_TABLE_LENGTH: usize = LONGEST_OPTIMAL_MATCH as usize + 3;
 const MAX_PRICE: i32 = 1 << 30;
 const SHORTEST_MATCH: u32 = 3;
 const MIN_COMPRESSIBLE_BLOCK_LENGTH: usize = 7;
@@ -27,16 +27,17 @@ struct OptimalNode {
     repeats: [u32; 3],
 }
 
-pub struct Ultra2Finder<'tables> {
+pub(crate) struct Ultra2Finder<'tables> {
     matcher: BinaryTreeMatcher<'tables>,
     prices: SymbolPrices,
     nodes: &'tables mut [OptimalNode],
     candidates: &'tables mut [MatchCandidate],
     level: u8,
+    #[allow(dead_code)]
     window_log: u8,
 }
 
-pub fn get_optimal_table_length(parameters: LevelParameters) -> usize {
+pub(crate) fn get_optimal_table_length(parameters: LevelParameters) -> usize {
     (1usize << parameters.window_log.min(MAX_HASH3_LOG))
         + OPTIMAL_TABLE_LENGTH * (NODE_WORDS + CANDIDATE_WORDS)
 }
@@ -83,7 +84,7 @@ fn split_words<T>(
 }
 
 impl<'tables> Ultra2Finder<'tables> {
-    pub fn new_over_zeroed_tables(
+    pub(crate) fn new_over_zeroed_tables(
         hash_table: &'tables mut [u32],
         tree_table: &'tables mut [u32],
         optimal_table: &'tables mut [u32],

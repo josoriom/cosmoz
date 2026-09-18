@@ -1,6 +1,6 @@
 use crate::encode_error::EncodeError;
 
-pub struct ForwardBitWriter<'output> {
+pub(crate) struct ForwardBitWriter<'output> {
     output: &'output mut [u8],
     container: u64,
     bits_in_container: usize,
@@ -8,7 +8,7 @@ pub struct ForwardBitWriter<'output> {
 }
 
 impl<'output> ForwardBitWriter<'output> {
-    pub fn new(output: &'output mut [u8]) -> Self {
+    pub(crate) fn new(output: &'output mut [u8]) -> Self {
         Self {
             output,
             container: 0,
@@ -17,7 +17,7 @@ impl<'output> ForwardBitWriter<'output> {
         }
     }
 
-    pub fn add_bits(&mut self, value: u64, count: usize) -> Result<(), EncodeError> {
+    pub(crate) fn add_bits(&mut self, value: u64, count: usize) -> Result<(), EncodeError> {
         if count == 0 {
             return Ok(());
         }
@@ -51,7 +51,7 @@ impl<'output> ForwardBitWriter<'output> {
         Ok(())
     }
 
-    pub fn finish(mut self) -> Result<usize, EncodeError> {
+    pub(crate) fn finish(mut self) -> Result<usize, EncodeError> {
         self.flush_bytes()?;
         if self.bits_in_container > 0 {
             let destination = self

@@ -17,7 +17,7 @@ use crate::{
     hash::xxhash64::XxHash64,
 };
 
-pub const STREAM_SEGMENT_SIZE: usize = 1 << MAX_OFFSET_LOG;
+pub(crate) const STREAM_SEGMENT_SIZE: usize = 1 << MAX_OFFSET_LOG;
 const BLOCK_OUTPUT_CAPACITY: usize = 2 * MAX_BLOCK_SIZE;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -27,7 +27,7 @@ enum BlockFlush {
     FinalSegment,
 }
 
-pub struct StreamEncoder {
+pub(crate) struct StreamEncoder {
     workspace: Box<EncodeWorkspace>,
     segment: Vec<u8>,
     block_output: Vec<u8>,
@@ -41,7 +41,7 @@ pub struct StreamEncoder {
 }
 
 impl StreamEncoder {
-    pub fn new(level: u8, with_checksum: bool) -> Result<Self, EncodeError> {
+    pub(crate) fn new(level: u8, with_checksum: bool) -> Result<Self, EncodeError> {
         #[cfg(not(feature = "checksum"))]
         if with_checksum {
             return Err(EncodeError::BadOptions);
@@ -60,7 +60,7 @@ impl StreamEncoder {
         })
     }
 
-    pub fn write(&mut self, input: &[u8], output: &mut Vec<u8>) -> Result<(), EncodeError> {
+    pub(crate) fn write(&mut self, input: &[u8], output: &mut Vec<u8>) -> Result<(), EncodeError> {
         if self.finished {
             return Err(EncodeError::BadOptions);
         }
@@ -85,7 +85,7 @@ impl StreamEncoder {
         Ok(())
     }
 
-    pub fn finish(&mut self, output: &mut Vec<u8>) -> Result<(), EncodeError> {
+    pub(crate) fn finish(&mut self, output: &mut Vec<u8>) -> Result<(), EncodeError> {
         if self.finished {
             return Err(EncodeError::BadOptions);
         }

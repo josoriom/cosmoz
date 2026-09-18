@@ -33,7 +33,7 @@ fn raw_literals_have_read_slack(payload_length: usize, literals_end: usize) -> b
     payload_length - literals_end >= LITERALS_READ_SLACK
 }
 
-pub struct BlockWorkspace {
+pub(crate) struct BlockWorkspace {
     pub literals: [u8; LITERALS_BUFFER_LENGTH],
     pub huffman_tables: [HuffmanDecodeTable; 2],
     pub current_huffman_table: usize,
@@ -45,7 +45,7 @@ pub struct BlockWorkspace {
 }
 
 impl BlockWorkspace {
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             literals: [0u8; LITERALS_BUFFER_LENGTH],
             huffman_tables: [HuffmanDecodeTable::new(), HuffmanDecodeTable::new()],
@@ -62,7 +62,7 @@ impl BlockWorkspace {
         }
     }
 
-    pub fn reset_history(&mut self, format: FrameFormat) {
+    pub(crate) fn reset_history(&mut self, format: FrameFormat) {
         self.frame_format = format;
         self.huffman_tables[0].is_ready = false;
         self.huffman_tables[1].is_ready = false;
@@ -83,7 +83,7 @@ impl Default for BlockWorkspace {
     }
 }
 
-pub fn decode_block(
+pub(crate) fn decode_block(
     input: &[u8],
     header: &BlockHeader,
     output: &mut [u8],
@@ -161,7 +161,7 @@ fn decode_compressed_block(
 const PAIRED_LITERALS_DISTANCE: usize = 2 * MAX_BLOCK_SIZE + 2 * FAST_PATH_SLACK;
 const PAIRED_OUTPUT_ROOM: usize = PAIRED_LITERALS_DISTANCE + MAX_BLOCK_SIZE + LITERALS_READ_SLACK;
 
-pub fn decode_compressed_block_pair(
+pub(crate) fn decode_compressed_block_pair(
     first_input: &[u8],
     second_input: &[u8],
     output: &mut [u8],

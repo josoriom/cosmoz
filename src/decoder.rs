@@ -1,4 +1,3 @@
-#[cfg(feature = "alloc")]
 use crate::block::repeat_offsets::RepeatOffsets;
 #[cfg(feature = "checksum")]
 use crate::hash::{xxhash3::XxHash3, xxhash64::XxHash64};
@@ -15,12 +14,12 @@ use crate::{
     },
 };
 
-pub struct DecodeWorkspace {
+pub(crate) struct DecodeWorkspace {
     pub block: BlockWorkspace,
 }
 
 impl DecodeWorkspace {
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             block: BlockWorkspace::new(),
         }
@@ -33,9 +32,8 @@ impl Default for DecodeWorkspace {
     }
 }
 
-#[cfg(feature = "alloc")]
 impl DecodeWorkspace {
-    pub fn new_boxed() -> alloc::boxed::Box<Self> {
+    pub(crate) fn new_boxed() -> alloc::boxed::Box<Self> {
         let layout = core::alloc::Layout::new::<Self>();
         unsafe {
             let raw = alloc::alloc::alloc_zeroed(layout) as *mut Self;
@@ -48,7 +46,6 @@ impl DecodeWorkspace {
     }
 }
 
-#[cfg(feature = "alloc")]
 unsafe fn write_initial_values_unchecked(target: *mut DecodeWorkspace) {
     unsafe {
         let block = core::ptr::addr_of_mut!((*target).block);
@@ -80,7 +77,7 @@ unsafe fn write_initial_values_unchecked(target: *mut DecodeWorkspace) {
     }
 }
 
-#[cfg(all(test, feature = "alloc"))]
+#[cfg(test)]
 mod new_boxed_tests {
     use super::*;
 
@@ -290,7 +287,7 @@ fn skip_cosmoz_frame_body(input: &[u8], header: &FrameHeader) -> Result<usize, D
     Ok(position)
 }
 
-pub fn get_frame_compressed_size(input: &[u8]) -> Result<usize, DecodeError> {
+pub(crate) fn get_frame_compressed_size(input: &[u8]) -> Result<usize, DecodeError> {
     if is_skippable_frame(input) {
         return get_skippable_frame_length(input);
     }
@@ -298,7 +295,7 @@ pub fn get_frame_compressed_size(input: &[u8]) -> Result<usize, DecodeError> {
     skip_frame_body(input, &header)
 }
 
-pub fn get_decompressed_size(input: &[u8]) -> Result<Option<u64>, DecodeError> {
+pub(crate) fn get_decompressed_size(input: &[u8]) -> Result<Option<u64>, DecodeError> {
     let mut position = 0usize;
     let mut total_size = 0u64;
 
@@ -325,10 +322,20 @@ pub fn get_decompressed_size(input: &[u8]) -> Result<Option<u64>, DecodeError> {
     Ok(Some(total_size))
 }
 
-pub fn decompress(
+#[cfg(any(test, all(target_arch = "wasm32", feature = "wasm-exports")))]
+pub(crate) fn decompress(
     input: &[u8],
     output: &mut [u8],
     workspace: &mut DecodeWorkspace,
+) -> Result<usize, DecodeError> {
+    decompress_checked(input, output, workspace, true)
+}
+
+pub(crate) fn decompress_checked(
+    input: &[u8],
+    output: &mut [u8],
+    workspace: &mut DecodeWorkspace,
+    verify_checksum: bool,
 ) -> Result<usize, DecodeError> {
     let mut input_position = 0usize;
     let mut output_position = 0usize;
@@ -342,7 +349,7 @@ pub fn decompress(
         }
 
         let (bytes_consumed, new_output_position) =
-            decode_frame(remaining_input, output, output_position, workspace)?;
+            decode_frame(remaining_input, output, output_position, workspace, verify_checksum)?;
         input_position += bytes_consumed;
         output_position = new_output_position;
     }
@@ -350,11 +357,13 @@ pub fn decompress(
     Ok(output_position)
 }
 
+#[cfg_attr(not(feature = "checksum"), allow(unused_variables))]
 fn decode_frame(
     input: &[u8],
     output: &mut [u8],
     output_position: usize,
     workspace: &mut DecodeWorkspace,
+    verify_checksum: bool,
 ) -> Result<(usize, usize), DecodeError> {
     let header = read_frame_header(input)?;
     let frame_start_output_position = output_position;
@@ -379,7 +388,7 @@ fn decode_frame(
     #[cfg(feature = "checksum")]
     {
         let checksum_length = header.checksum_length();
-        if header.has_checksum {
+        if header.has_checksum && verify_checksum {
             let expected_bytes = input
                 .get(input_position..input_position + checksum_length)
                 .ok_or(DecodeError::InputTooShort)?;
@@ -734,5 +743,244 @@ mod tests {
         let mut output = [0u8; 16];
         let written = decompress(&frame, &mut output, &mut workspace).unwrap();
         assert_eq!(written, 0);
+    }
+
+    #[test]
+    fn rejects_cosmoz_frame_without_content_size() {
+        let input = [0x4F, 0x53, 0x4D, 0x4F, 0x00, 0x00];
+        assert_eq!(read_frame_header(&input), Err(DecodeError::BadFrameHeader));
+    }
+
+    #[cfg(feature = "compression")]
+    #[test]
+    fn rejects_cosmoz_frame_with_wrong_chunk_sum() {
+        use crate::encoder::{CompressFormat, CompressOptions, EncodeWorkspace, compress, get_max_compressed_size};
+        use crate::frame::chunk_index::CHUNK_COUNT_LENGTH;
+
+        fn make_text(length: usize) -> Vec<u8> {
+            let sentence = b"the quick brown fox jumps over the lazy dog. ";
+            let mut text = Vec::with_capacity(length + sentence.len());
+            while text.len() < length {
+                text.extend_from_slice(sentence);
+            }
+            text.truncate(length);
+            text
+        }
+
+        let mut concatenated = make_text(10_000);
+        concatenated.extend_from_slice(&make_text(20_000));
+
+        let options = CompressOptions {
+            format: CompressFormat::Cosmoz { chunk_size: 10_000 },
+            with_checksum: true,
+            level: 1,
+        };
+        let mut workspace = EncodeWorkspace::new_boxed();
+        let mut frame = vec![0u8; get_max_compressed_size(concatenated.len(), &options)];
+        let written = compress(&concatenated, &mut frame, &options, &mut workspace).unwrap();
+        frame.truncate(written);
+
+        let header = read_frame_header(&frame).unwrap();
+        let compressed_length_field = 4;
+        let first_entry_decompressed_length_offset =
+            header.header_length + CHUNK_COUNT_LENGTH + compressed_length_field;
+        frame[first_entry_decompressed_length_offset] =
+            frame[first_entry_decompressed_length_offset].wrapping_add(1);
+
+        let mut decode_workspace = DecodeWorkspace::new_boxed();
+        let mut output = vec![0u8; concatenated.len() + 4096];
+        assert_eq!(
+            decompress(&frame, &mut output, &mut decode_workspace),
+            Err(DecodeError::BadFrameHeader)
+        );
+    }
+
+    const COPY_SEQUENCE_COUNT: usize = 22;
+
+    fn write_raw_test_block(frame: &mut Vec<u8>, block_type: BlockType, payload: &[u8], is_last: bool) {
+        let type_bits = match block_type {
+            BlockType::Raw => 0,
+            BlockType::Rle => 1,
+            BlockType::Compressed => 2,
+        };
+        let header = (payload.len() << 3) | (type_bits << 1) | is_last as usize;
+        frame.extend_from_slice(&header.to_le_bytes()[..3]);
+        frame.extend_from_slice(payload);
+    }
+
+    fn write_copy_sequences_bitstream(payload: &mut Vec<u8>) {
+        let offset_extra_bits = 0b011u128;
+        let mut bits = 1u128;
+        for _ in 0..COPY_SEQUENCE_COUNT {
+            bits = (bits << 3) | offset_extra_bits;
+        }
+        let byte_count = (3 * COPY_SEQUENCE_COUNT + 1).div_ceil(8);
+        payload.extend_from_slice(&bits.to_le_bytes()[..byte_count]);
+    }
+
+    fn build_frame_with_repeat_tables_after_an_empty_block() -> (Vec<u8>, Vec<u8>) {
+        let all_rle_modes = 0b0101_0100u8;
+        let all_repeat_modes = 0b1111_1100u8;
+        let literal_length_code_zero = 0u8;
+        let offset_code_three = 3u8;
+        let match_length_code_for_eight = 5u8;
+        let no_literals = 0u8;
+        let eight_raw_literals = 8u8 << 3;
+        let no_sequences = 0u8;
+
+        let mut first_copies = vec![no_literals, COPY_SEQUENCE_COUNT as u8, all_rle_modes];
+        first_copies.extend_from_slice(&[
+            literal_length_code_zero,
+            offset_code_three,
+            match_length_code_for_eight,
+        ]);
+        write_copy_sequences_bitstream(&mut first_copies);
+
+        let mut literals_only = vec![eight_raw_literals];
+        literals_only.extend_from_slice(b"ijklmnop");
+        literals_only.push(no_sequences);
+
+        let mut second_copies = vec![no_literals, COPY_SEQUENCE_COUNT as u8, all_repeat_modes];
+        write_copy_sequences_bitstream(&mut second_copies);
+
+        let mut expected = b"abcdefgh".repeat(COPY_SEQUENCE_COUNT + 1);
+        expected.extend_from_slice(&b"ijklmnop".repeat(COPY_SEQUENCE_COUNT + 1));
+
+        let single_segment_with_two_byte_content_size = 0x60u8;
+        let mut frame = vec![
+            0x28,
+            0xB5,
+            0x2F,
+            0xFD,
+            single_segment_with_two_byte_content_size,
+        ];
+        frame.extend_from_slice(&((expected.len() - 256) as u16).to_le_bytes());
+        write_raw_test_block(&mut frame, BlockType::Raw, b"abcdefgh", false);
+        write_raw_test_block(&mut frame, BlockType::Compressed, &first_copies, false);
+        write_raw_test_block(&mut frame, BlockType::Compressed, &literals_only, false);
+        write_raw_test_block(&mut frame, BlockType::Compressed, &second_copies, true);
+        (frame, expected)
+    }
+
+    fn decode_frame_for_test(frame: &[u8], output_length: usize, content_length: usize) -> Vec<u8> {
+        let mut output = vec![0u8; output_length];
+        let mut workspace = DecodeWorkspace::new_boxed();
+        let written = decompress(frame, &mut output, &mut workspace).unwrap();
+        assert_eq!(written, content_length);
+        output.truncate(written);
+        output
+    }
+
+    #[test]
+    fn repeat_mode_after_a_block_without_sequences_reuses_the_earlier_tables() {
+        use crate::frame::block_header::MAX_BLOCK_SIZE;
+
+        let (frame, expected) = build_frame_with_repeat_tables_after_an_empty_block();
+
+        let checked_path_output = decode_frame_for_test(&frame, expected.len(), expected.len());
+        assert_eq!(checked_path_output, expected);
+
+        let fast_path_output =
+            decode_frame_for_test(&frame, expected.len() + MAX_BLOCK_SIZE + 64, expected.len());
+        assert_eq!(fast_path_output, expected);
+    }
+
+    fn find_zstd_cli() -> Option<std::path::PathBuf> {
+        let output = std::process::Command::new("which").arg("zstd").output().ok()?;
+        let path = String::from_utf8(output.stdout).ok()?;
+        let path = path.trim();
+        if output.status.success() && !path.is_empty() {
+            Some(std::path::PathBuf::from(path))
+        } else {
+            None
+        }
+    }
+
+    fn run_zstd_cli(zstd_path: &std::path::Path, arguments: &[&str], input: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut child = std::process::Command::new(zstd_path)
+            .args(arguments)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("failed to start zstd");
+        child
+            .stdin
+            .take()
+            .expect("failed to open zstd input")
+            .write_all(input)
+            .expect("failed to write to zstd");
+        let output = child
+            .wait_with_output()
+            .expect("failed to read zstd output");
+        assert!(output.status.success(), "zstd failed");
+        output.stdout
+    }
+
+    fn has_repeat_tables_after_a_block_without_sequences(frame: &[u8]) -> bool {
+        use crate::block::literals::read_literals_header;
+        use crate::block::sequences::{TableMode, read_sequences_header};
+
+        let mut position = read_frame_header(frame).unwrap().header_length;
+        let mut previous_block_had_no_sequences = false;
+        loop {
+            let block_header = read_block_header(&frame[position..]).unwrap();
+            position += 3;
+            if block_header.block_type == BlockType::Compressed {
+                let payload = &frame[position..position + block_header.block_size];
+                let literals_header = read_literals_header(payload).unwrap();
+                let sequences_input =
+                    &payload[literals_header.header_length + literals_header.compressed_size..];
+                let sequences_header = read_sequences_header(sequences_input).unwrap();
+                let modes = [
+                    sequences_header.literal_length_mode,
+                    sequences_header.offset_mode,
+                    sequences_header.match_length_mode,
+                ];
+                if sequences_header.sequence_count > 0
+                    && previous_block_had_no_sequences
+                    && modes.contains(&TableMode::Repeat)
+                {
+                    return true;
+                }
+                previous_block_had_no_sequences = sequences_header.sequence_count == 0;
+            }
+            if block_header.block_type == BlockType::Rle {
+                position += 1;
+            } else {
+                position += block_header.block_size;
+            }
+            if block_header.is_last {
+                return false;
+            }
+        }
+    }
+
+    const IRON_PATH: &str = "/Users/josorio/github/josoriom/szstd/data/iron_ultrairon_SER_MS-AI-HILPOS@fNMR_IROr20_IROp011_LTR_16.mzML";
+    const IRON_SLICE_START: usize = 18_000_000;
+    const IRON_SLICE_LENGTH: usize = 1_000_000;
+
+    #[test]
+    fn decodes_a_zstd_level_nine_frame_that_repeats_tables_after_a_block_without_sequences() {
+        let Some(zstd_path) = find_zstd_cli() else {
+            eprintln!("skipping: zstd CLI not found");
+            return;
+        };
+        let Ok(iron) = std::fs::read(IRON_PATH) else {
+            eprintln!("skipping: {IRON_PATH} not found");
+            return;
+        };
+        let input = &iron[IRON_SLICE_START..IRON_SLICE_START + IRON_SLICE_LENGTH];
+        let frame = run_zstd_cli(&zstd_path, &["-q", "-c", "-T1", "-9", "--no-check"], input);
+        assert!(
+            has_repeat_tables_after_a_block_without_sequences(&frame),
+            "this zstd version no longer writes Repeat tables after a block without sequences"
+        );
+
+        let expected = run_zstd_cli(&zstd_path, &["-q", "-d", "-c"], &frame);
+        assert_eq!(expected, input);
+
+        let decoded = decode_frame_for_test(&frame, input.len(), input.len());
+        assert_eq!(decoded, expected);
     }
 }

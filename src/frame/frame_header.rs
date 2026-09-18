@@ -1,21 +1,21 @@
 use crate::error::DecodeError;
 
-pub const ZSTD_MAGIC_NUMBER: u32 = 0xFD2FB528;
-pub const COSMOZ_MAGIC_NUMBER: u32 = 0x4F4D534F;
-pub const SKIPPABLE_MAGIC_MASK: u32 = 0xFFFFFFF0;
-pub const SKIPPABLE_MAGIC_BASE: u32 = 0x184D2A50;
-pub const MAX_WINDOW_SIZE: u64 = 1 << 31;
-pub const ZSTD_CHECKSUM_LENGTH: usize = 4;
-pub const COSMOZ_CHECKSUM_LENGTH: usize = 8;
+pub(crate) const ZSTD_MAGIC_NUMBER: u32 = 0xFD2FB528;
+pub(crate) const COSMOZ_MAGIC_NUMBER: u32 = 0x4F4D534F;
+pub(crate) const SKIPPABLE_MAGIC_MASK: u32 = 0xFFFFFFF0;
+pub(crate) const SKIPPABLE_MAGIC_BASE: u32 = 0x184D2A50;
+pub(crate) const MAX_WINDOW_SIZE: u64 = 1 << 31;
+pub(crate) const ZSTD_CHECKSUM_LENGTH: usize = 4;
+pub(crate) const COSMOZ_CHECKSUM_LENGTH: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FrameFormat {
+pub(crate) enum FrameFormat {
     Zstd,
     Cosmoz,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FrameHeader {
+pub(crate) struct FrameHeader {
     pub format: FrameFormat,
     pub window_size: u64,
     pub content_size: Option<u64>,
@@ -26,7 +26,7 @@ pub struct FrameHeader {
 }
 
 impl FrameHeader {
-    pub fn checksum_length(&self) -> usize {
+    pub(crate) fn checksum_length(&self) -> usize {
         if !self.has_checksum {
             return 0;
         }
@@ -45,7 +45,7 @@ fn read_frame_format(magic_number: u32) -> Result<FrameFormat, DecodeError> {
     }
 }
 
-pub fn read_frame_header(input: &[u8]) -> Result<FrameHeader, DecodeError> {
+pub(crate) fn read_frame_header(input: &[u8]) -> Result<FrameHeader, DecodeError> {
     if input.len() < 4 {
         return Err(DecodeError::InputTooShort);
     }
@@ -128,7 +128,7 @@ pub fn read_frame_header(input: &[u8]) -> Result<FrameHeader, DecodeError> {
     })
 }
 
-pub fn is_skippable_frame(input: &[u8]) -> bool {
+pub(crate) fn is_skippable_frame(input: &[u8]) -> bool {
     if input.len() < 4 {
         return false;
     }
@@ -136,7 +136,7 @@ pub fn is_skippable_frame(input: &[u8]) -> bool {
     magic_number & SKIPPABLE_MAGIC_MASK == SKIPPABLE_MAGIC_BASE
 }
 
-pub fn get_skippable_frame_length(input: &[u8]) -> Result<usize, DecodeError> {
+pub(crate) fn get_skippable_frame_length(input: &[u8]) -> Result<usize, DecodeError> {
     if input.len() < 8 {
         return Err(DecodeError::InputTooShort);
     }

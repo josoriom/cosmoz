@@ -38,7 +38,7 @@ enum ZeroCountBase {
     OneGuaranteed,
 }
 
-pub struct SymbolPrices {
+pub(crate) struct SymbolPrices {
     literal_frequencies: [u32; LITERAL_SYMBOL_COUNT],
     literal_length_frequencies: [u32; LITERAL_LENGTH_CODE_COUNT],
     match_length_frequencies: [u32; MATCH_LENGTH_CODE_COUNT],
@@ -95,7 +95,7 @@ impl Default for SymbolPrices {
 }
 
 impl SymbolPrices {
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         SymbolPrices {
             literal_frequencies: [0; LITERAL_SYMBOL_COUNT],
             literal_length_frequencies: [0; LITERAL_LENGTH_CODE_COUNT],
@@ -113,11 +113,11 @@ impl SymbolPrices {
         }
     }
 
-    pub fn has_statistics(&self) -> bool {
+    pub(crate) fn has_statistics(&self) -> bool {
         self.literal_length_sum != 0
     }
 
-    pub fn prepare_for_block(&mut self, block: &[u8]) {
+    pub(crate) fn prepare_for_block(&mut self, block: &[u8]) {
         self.mode = PriceMode::Dynamic;
         if self.has_statistics() {
             self.literal_sum = scale_to_target(&mut self.literal_frequencies, LITERAL_SCALE_LOG);
@@ -148,7 +148,7 @@ impl SymbolPrices {
         self.update_sum_prices();
     }
 
-    pub fn update_sum_prices(&mut self) {
+    pub(crate) fn update_sum_prices(&mut self) {
         self.literal_sum_price = get_weight(self.literal_sum);
         self.literal_length_sum_price = get_weight(self.literal_length_sum);
         self.match_length_sum_price = get_weight(self.match_length_sum);
@@ -156,7 +156,7 @@ impl SymbolPrices {
     }
 
     #[inline(always)]
-    pub fn get_literal_price(&self, literal: u8) -> i32 {
+    pub(crate) fn get_literal_price(&self, literal: u8) -> i32 {
         if self.mode == PriceMode::Predefined {
             return (PREDEFINED_LITERAL_BITS * BIT_COST_MULTIPLIER) as i32;
         }
@@ -167,7 +167,7 @@ impl SymbolPrices {
     }
 
     #[inline(always)]
-    pub fn get_literal_length_price(&self, literal_length: u32) -> i32 {
+    pub(crate) fn get_literal_length_price(&self, literal_length: u32) -> i32 {
         if self.mode == PriceMode::Predefined {
             return get_weight(literal_length) as i32;
         }
@@ -181,13 +181,13 @@ impl SymbolPrices {
     }
 
     #[inline(always)]
-    pub fn get_literal_length_increase_price(&self, literal_length: u32) -> i32 {
+    pub(crate) fn get_literal_length_increase_price(&self, literal_length: u32) -> i32 {
         self.get_literal_length_price(literal_length)
             - self.get_literal_length_price(literal_length - 1)
     }
 
     #[inline(always)]
-    pub fn get_match_price(&self, offset_base: u32, match_length: u32) -> i32 {
+    pub(crate) fn get_match_price(&self, offset_base: u32, match_length: u32) -> i32 {
         let offset_code = highest_bit(offset_base);
         if self.mode == PriceMode::Predefined {
             return (get_weight(match_length - MIN_MATCH_LENGTH)
@@ -204,7 +204,7 @@ impl SymbolPrices {
         (offset_price + match_length_price + MATCH_PRICE_PENALTY) as i32
     }
 
-    pub fn record_sequence(&mut self, literals: &[u8], offset_base: u32, match_length: u32) {
+    pub(crate) fn record_sequence(&mut self, literals: &[u8], offset_base: u32, match_length: u32) {
         for &literal in literals {
             self.literal_frequencies[literal as usize] += LITERAL_FREQUENCY_STEP;
         }

@@ -1,29 +1,29 @@
 use super::level_table::{LevelParameters, Strategy};
 
-pub struct TableStorage<'tables> {
+pub(crate) struct TableStorage<'tables> {
     pub hash_table: &'tables mut [u32],
     pub chain_table: &'tables mut [u32],
     pub optimal_table: &'tables mut [u32],
 }
 
-pub fn hash_table_length(level_parameters: LevelParameters) -> usize {
+pub(crate) fn hash_table_length(level_parameters: LevelParameters) -> usize {
     1usize << level_parameters.hash_log
 }
 
-pub fn chain_table_length(level_parameters: LevelParameters) -> usize {
+pub(crate) fn chain_table_length(level_parameters: LevelParameters) -> usize {
     1usize << level_parameters.chain_log
 }
 
-pub fn optimal_table_length(level_parameters: LevelParameters) -> usize {
+pub(crate) fn optimal_table_length(level_parameters: LevelParameters) -> usize {
     match level_parameters.strategy {
-        #[cfg(feature = "levels")]
+        #[cfg(feature = "compression")]
         Strategy::Ultra2 => crate::algorithms::ultra2::get_optimal_table_length(level_parameters),
         _ => 0,
     }
 }
 
-#[cfg(feature = "levels")]
-pub fn get_table_parameters_for_input(
+#[cfg(feature = "compression")]
+pub(crate) fn get_table_parameters_for_input(
     level: u8,
     level_parameters: LevelParameters,
     input_length: usize,
@@ -37,8 +37,8 @@ pub fn get_table_parameters_for_input(
     }
 }
 
-#[cfg(not(feature = "levels"))]
-pub fn get_table_parameters_for_input(
+#[cfg(not(feature = "compression"))]
+pub(crate) fn get_table_parameters_for_input(
     _level: u8,
     level_parameters: LevelParameters,
     _input_length: usize,
@@ -46,13 +46,13 @@ pub fn get_table_parameters_for_input(
     level_parameters
 }
 
-pub fn table_memory_length(level_parameters: LevelParameters) -> usize {
+pub(crate) fn table_memory_length(level_parameters: LevelParameters) -> usize {
     hash_table_length(level_parameters)
         + chain_table_length(level_parameters)
         + optimal_table_length(level_parameters)
 }
 
-pub fn split_table_storage(
+pub(crate) fn split_table_storage(
     memory: &mut [u32],
     level_parameters: LevelParameters,
 ) -> TableStorage<'_> {
@@ -76,7 +76,7 @@ pub fn split_table_storage(
             chain_table: chain_region,
             optimal_table,
         },
-        #[cfg(feature = "levels")]
+        #[cfg(feature = "compression")]
         Strategy::Ultra2 => TableStorage {
             hash_table,
             chain_table: chain_region,

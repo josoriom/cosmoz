@@ -17,12 +17,12 @@ const MAX_DIRECT_WEIGHT_COUNT: usize = 128;
 const MAX_WEIGHT_VALUE: usize = MAX_HUFFMAN_BITS;
 
 #[derive(Clone, Copy, Default)]
-pub struct HuffmanCode {
+pub(crate) struct HuffmanCode {
     pub code: u16,
     pub bit_count: u8,
 }
 
-pub struct HuffmanEncodeTable {
+pub(crate) struct HuffmanEncodeTable {
     pub codes: [HuffmanCode; 256],
     pub weights: [u8; 256],
     pub symbol_count: usize,
@@ -30,7 +30,7 @@ pub struct HuffmanEncodeTable {
 }
 
 impl HuffmanEncodeTable {
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             codes: [HuffmanCode {
                 code: 0,
@@ -49,7 +49,7 @@ impl Default for HuffmanEncodeTable {
     }
 }
 
-pub fn build_huffman_encode_table(
+pub(crate) fn build_huffman_encode_table(
     counts: &[u32; 256],
     table: &mut HuffmanEncodeTable,
 ) -> Result<(), EncodeError> {
@@ -218,7 +218,7 @@ fn assign_codes(table: &mut HuffmanEncodeTable) {
     }
 }
 
-pub fn write_direct_weights(
+pub(crate) fn write_direct_weights(
     output: &mut [u8],
     table: &HuffmanEncodeTable,
 ) -> Result<usize, EncodeError> {
@@ -252,7 +252,7 @@ pub fn write_direct_weights(
     Ok(total_size)
 }
 
-pub fn write_huffman_table(
+pub(crate) fn write_huffman_table(
     output: &mut [u8],
     table: &HuffmanEncodeTable,
     weight_fse_table: &mut FseEncodeTable,

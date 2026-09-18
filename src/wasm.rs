@@ -1,6 +1,6 @@
 use core::cell::UnsafeCell;
 
-#[cfg(feature = "encoder")]
+#[cfg(feature = "compression")]
 use crate::block::repeat_offsets::RepeatOffsets;
 #[cfg(feature = "checksum")]
 use crate::hash::xxhash3;
@@ -12,7 +12,7 @@ use crate::{
         frame_header::{FrameFormat, read_frame_header},
     },
 };
-#[cfg(feature = "encoder")]
+#[cfg(feature = "compression")]
 use crate::{
     encode_error::EncodeError,
     encoder::{
@@ -44,11 +44,9 @@ const PAGE_SIZE: usize = 64 * 1024;
 const HEAP_ALIGNMENT: usize = 8;
 
 static WORKSPACE: SingleThreadCell<DecodeWorkspace> = SingleThreadCell::new(DecodeWorkspace::new());
-#[cfg(feature = "encoder")]
-static ENCODE_WORKSPACE: SingleThreadCell<EncodeWorkspace> =
-    SingleThreadCell::new(EncodeWorkspace::zeroed());
-#[cfg(feature = "encoder")]
-static ENCODE_WORKSPACE_READY: SingleThreadCell<bool> = SingleThreadCell::new(false);
+#[cfg(feature = "compression")]
+static ENCODE_WORKSPACE: SingleThreadCell<Option<alloc::boxed::Box<EncodeWorkspace>>> =
+    SingleThreadCell::new(None);
 static HEAP_START: SingleThreadCell<usize> = SingleThreadCell::new(0);
 static HEAP_USED: SingleThreadCell<usize> = SingleThreadCell::new(0);
 static HEAP_END: SingleThreadCell<usize> = SingleThreadCell::new(0);
@@ -57,15 +55,10 @@ fn get_workspace() -> &'static mut DecodeWorkspace {
     unsafe { &mut *WORKSPACE.0.get() }
 }
 
-#[cfg(feature = "encoder")]
+#[cfg(feature = "compression")]
 fn get_encode_workspace() -> &'static mut EncodeWorkspace {
-    let ready = unsafe { &mut *ENCODE_WORKSPACE_READY.0.get() };
-    let workspace = unsafe { &mut *ENCODE_WORKSPACE.0.get() };
-    if !*ready {
-        workspace.write_initial_values_unchecked();
-        *ready = true;
-    }
-    workspace
+    let slot = unsafe { &mut *ENCODE_WORKSPACE.0.get() };
+    slot.get_or_insert_with(EncodeWorkspace::new_boxed)
 }
 
 fn get_heap_start() -> &'static mut usize {
@@ -89,7 +82,7 @@ fn align_up(value: usize, alignment: usize) -> usize {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn cosmoz_allocate(length: usize) -> *mut u8 {
+pub(crate) extern "C" fn cosmoz_allocate(length: usize) -> *mut u8 {
     let heap_used = get_heap_used();
     let heap_end = get_heap_end();
     let mut start = align_up(*heap_used, HEAP_ALIGNMENT);
@@ -118,7 +111,7 @@ pub extern "C" fn cosmoz_allocate(length: usize) -> *mut u8 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn cosmoz_free(pointer: *mut u8, length: usize) {
+pub(crate) extern "C" fn cosmoz_free(pointer: *mut u8, length: usize) {
     let heap_used = get_heap_used();
     let block_start = pointer as usize;
     if block_start >= *get_heap_start() && block_start + length == *heap_used {
@@ -127,7 +120,7 @@ pub extern "C" fn cosmoz_free(pointer: *mut u8, length: usize) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn cosmoz_reset_heap() {
+pub(crate) extern "C" fn cosmoz_reset_heap() {
     *get_heap_used() = *get_heap_start();
 }
 
@@ -156,7 +149,7 @@ unsafe fn slice_from_raw_parts_mut_checked<'a>(
 
 #[unsafe(no_mangle)]
 #[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn cosmoz_get_decompressed_size(
+pub(crate) unsafe extern "C" fn cosmoz_get_decompressed_size(
     input_pointer: *const u8,
     input_length: usize,
 ) -> i64 {
@@ -181,7 +174,7 @@ fn decode_error_to_decompress_error_code(error: DecodeError) -> i64 {
 
 #[unsafe(no_mangle)]
 #[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn cosmoz_decompress(
+pub(crate) unsafe extern "C" fn cosmoz_decompress(
     input_pointer: *const u8,
     input_length: usize,
     output_pointer: *mut u8,
@@ -202,7 +195,7 @@ pub unsafe extern "C" fn cosmoz_decompress(
     }
 }
 
-#[cfg(feature = "encoder")]
+#[cfg(feature = "compression")]
 fn compress_format_from_u32(format: u32) -> Option<CompressFormat> {
     match format {
         0 => Some(CompressFormat::Zstd),
@@ -213,14 +206,14 @@ fn compress_format_from_u32(format: u32) -> Option<CompressFormat> {
     }
 }
 
-#[cfg(feature = "encoder")]
+#[cfg(feature = "compression")]
 fn encode_error_to_error_code(error: EncodeError) -> i64 {
     -(1 + error as i64)
 }
 
-#[cfg(feature = "encoder")]
+#[cfg(feature = "compression")]
 #[unsafe(no_mangle)]
-pub extern "C" fn cosmoz_get_max_compressed_size(input_length: usize, format: u32) -> i64 {
+pub(crate) extern "C" fn cosmoz_get_max_compressed_size(input_length: usize, format: u32) -> i64 {
     let frame_format = match compress_format_from_u32(format) {
         Some(frame_format) => frame_format,
         None => return encode_error_to_error_code(EncodeError::BadOptions),
@@ -233,10 +226,10 @@ pub extern "C" fn cosmoz_get_max_compressed_size(input_length: usize, format: u3
     get_max_compressed_size(input_length, &options) as i64
 }
 
-#[cfg(feature = "encoder")]
+#[cfg(feature = "compression")]
 #[unsafe(no_mangle)]
 #[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn cosmoz_compress(
+pub(crate) unsafe extern "C" fn cosmoz_compress(
     input_pointer: *const u8,
     input_length: usize,
     output_pointer: *mut u8,
@@ -268,14 +261,14 @@ pub unsafe extern "C" fn cosmoz_compress(
     }
 }
 
-#[cfg(feature = "encoder")]
+#[cfg(feature = "compression")]
 const WASM_WINDOW_LOG: u8 = 20;
-#[cfg(feature = "encoder")]
+#[cfg(feature = "compression")]
 const MAX_WASM_CHUNK_INDEX_ENTRIES: usize = 4096;
 
 #[unsafe(no_mangle)]
 #[allow(unused_assignments)]
-pub extern "C" fn cosmoz_run_self_tests() -> i64 {
+pub(crate) extern "C" fn cosmoz_run_self_tests() -> i64 {
     let mut kernel_index: i64 = 0;
     macro_rules! run_kernel {
         ($kernel:expr) => {{
@@ -286,9 +279,9 @@ pub extern "C" fn cosmoz_run_self_tests() -> i64 {
         }};
     }
     run_kernel!(crate::simd::copy_bytes::run_self_tests);
-    #[cfg(feature = "encoder")]
+    #[cfg(feature = "compression")]
     run_kernel!(crate::simd::count_matching_bytes::run_self_tests);
-    #[cfg(feature = "encoder")]
+    #[cfg(feature = "compression")]
     run_kernel!(crate::simd::histogram::run_self_tests);
     run_kernel!(crate::simd::row_tag_match::run_self_tests);
     #[cfg(feature = "checksum")]
@@ -309,7 +302,7 @@ fn read_cosmoz_chunk_index(frame: &[u8]) -> Result<ChunkIndex<'_>, DecodeError> 
 
 #[unsafe(no_mangle)]
 #[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn cosmoz_read_chunk_count(
+pub(crate) unsafe extern "C" fn cosmoz_read_chunk_count(
     frame_pointer: *const u8,
     frame_length: usize,
 ) -> i64 {
@@ -325,7 +318,7 @@ pub unsafe extern "C" fn cosmoz_read_chunk_count(
 
 #[unsafe(no_mangle)]
 #[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn cosmoz_read_chunk_entry(
+pub(crate) unsafe extern "C" fn cosmoz_read_chunk_entry(
     frame_pointer: *const u8,
     frame_length: usize,
     chunk_number: usize,
@@ -371,7 +364,7 @@ pub unsafe extern "C" fn cosmoz_read_chunk_entry(
 
 #[unsafe(no_mangle)]
 #[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn cosmoz_decompress_chunk(
+pub(crate) unsafe extern "C" fn cosmoz_decompress_chunk(
     chunk_pointer: *const u8,
     chunk_length: usize,
     output_pointer: *mut u8,
@@ -398,10 +391,10 @@ pub unsafe extern "C" fn cosmoz_decompress_chunk(
     }
 }
 
-#[cfg(feature = "encoder")]
+#[cfg(feature = "compression")]
 #[unsafe(no_mangle)]
 #[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn cosmoz_compress_chunk(
+pub(crate) unsafe extern "C" fn cosmoz_compress_chunk(
     input_pointer: *const u8,
     input_length: usize,
     output_pointer: *mut u8,
@@ -424,10 +417,10 @@ pub unsafe extern "C" fn cosmoz_compress_chunk(
     }
 }
 
-#[cfg(feature = "encoder")]
+#[cfg(feature = "compression")]
 #[unsafe(no_mangle)]
 #[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn cosmoz_write_frame_header(
+pub(crate) unsafe extern "C" fn cosmoz_write_frame_header(
     output_pointer: *mut u8,
     output_length: usize,
     content_size_low: u32,
@@ -451,10 +444,10 @@ pub unsafe extern "C" fn cosmoz_write_frame_header(
     }
 }
 
-#[cfg(feature = "encoder")]
+#[cfg(feature = "compression")]
 #[unsafe(no_mangle)]
 #[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn cosmoz_write_chunk_index(
+pub(crate) unsafe extern "C" fn cosmoz_write_chunk_index(
     output_pointer: *mut u8,
     output_length: usize,
     entries_pointer: *const u32,
@@ -494,10 +487,10 @@ pub unsafe extern "C" fn cosmoz_write_chunk_index(
     }
 }
 
-#[cfg(feature = "encoder")]
+#[cfg(feature = "compression")]
 #[unsafe(no_mangle)]
 #[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn cosmoz_write_checksum(
+pub(crate) unsafe extern "C" fn cosmoz_write_checksum(
     output_pointer: *mut u8,
     output_length: usize,
     hash_low: u32,
@@ -517,7 +510,7 @@ pub unsafe extern "C" fn cosmoz_write_checksum(
 #[cfg(feature = "checksum")]
 #[unsafe(no_mangle)]
 #[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn cosmoz_xxhash3(pointer: *const u8, length: usize) -> u64 {
+pub(crate) unsafe extern "C" fn cosmoz_xxhash3(pointer: *const u8, length: usize) -> u64 {
     let input = match unsafe { slice_from_raw_parts_checked(pointer, length) } {
         Some(input) => input,
         None => return 0,

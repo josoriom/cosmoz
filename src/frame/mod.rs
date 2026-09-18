@@ -1,5 +1,5 @@
-pub mod block_header;
-pub mod chunk_index;
-pub mod frame_header;
-#[cfg(feature = "encoder")]
-pub mod frame_writer;
+pub(crate) mod block_header;
+pub(crate) mod chunk_index;
+pub(crate) mod frame_header;
+#[cfg(feature = "compression")]
+pub(crate) mod frame_writer;

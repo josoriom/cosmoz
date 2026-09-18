@@ -4,25 +4,25 @@ use crate::{
     error::DecodeError,
 };
 
-pub const MAX_HUFFMAN_BITS: usize = 11;
-pub const MAX_HUFFMAN_TABLE_SIZE: usize = 1 << MAX_HUFFMAN_BITS;
-pub const MAX_WEIGHT_COUNT: usize = 256;
-pub const MAX_WEIGHT_ACCURACY_LOG: usize = 6;
+pub(crate) const MAX_HUFFMAN_BITS: usize = 11;
+pub(crate) const MAX_HUFFMAN_TABLE_SIZE: usize = 1 << MAX_HUFFMAN_BITS;
+pub(crate) const MAX_WEIGHT_COUNT: usize = 256;
+pub(crate) const MAX_WEIGHT_ACCURACY_LOG: usize = 6;
 
 #[derive(Clone, Copy, Default)]
-pub struct HuffmanDecodeEntry {
+pub(crate) struct HuffmanDecodeEntry {
     pub symbol: u8,
     pub bit_count: u8,
 }
 
-pub struct HuffmanDecodeTable {
+pub(crate) struct HuffmanDecodeTable {
     pub entries: [HuffmanDecodeEntry; MAX_HUFFMAN_TABLE_SIZE],
     pub max_bits: u8,
     pub is_ready: bool,
 }
 
 impl HuffmanDecodeTable {
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             entries: [HuffmanDecodeEntry {
                 symbol: 0,
@@ -40,7 +40,7 @@ impl Default for HuffmanDecodeTable {
     }
 }
 
-pub fn read_huffman_table(
+pub(crate) fn read_huffman_table(
     input: &[u8],
     table: &mut HuffmanDecodeTable,
     weight_fse_table: &mut FseDecodeTable,

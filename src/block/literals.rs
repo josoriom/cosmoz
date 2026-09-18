@@ -10,7 +10,7 @@ use crate::{
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum LiteralsType {
+pub(crate) enum LiteralsType {
     Raw,
     Rle,
     Compressed,
@@ -19,7 +19,7 @@ pub enum LiteralsType {
 
 #[derive(PartialEq, Eq)]
 #[cfg_attr(test, derive(Debug))]
-pub enum LiteralSource<'input, 'workspace> {
+pub(crate) enum LiteralSource<'input, 'workspace> {
     Raw(&'input [u8]),
     Rle { byte: u8, count: usize },
     Decoded(&'workspace [u8]),
@@ -27,7 +27,7 @@ pub enum LiteralSource<'input, 'workspace> {
 }
 
 impl<'input, 'workspace> LiteralSource<'input, 'workspace> {
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         match self {
             LiteralSource::Raw(bytes) => bytes.len(),
             LiteralSource::Rle { count, .. } => *count,
@@ -36,12 +36,13 @@ impl<'input, 'workspace> LiteralSource<'input, 'workspace> {
         }
     }
 
-    pub fn is_empty(&self) -> bool {
+    #[allow(dead_code)]
+    pub(crate) fn is_empty(&self) -> bool {
         self.len() == 0
     }
 }
 
-pub struct LiteralsHeader {
+pub(crate) struct LiteralsHeader {
     pub literals_type: LiteralsType,
     pub regenerated_size: usize,
     pub compressed_size: usize,
@@ -49,7 +50,7 @@ pub struct LiteralsHeader {
     pub header_length: usize,
 }
 
-pub fn read_literals_header(input: &[u8]) -> Result<LiteralsHeader, DecodeError> {
+pub(crate) fn read_literals_header(input: &[u8]) -> Result<LiteralsHeader, DecodeError> {
     let header_byte = *input.first().ok_or(DecodeError::InputTooShort)?;
     let type_bits = header_byte & 0b11;
     let size_format = (header_byte >> 2) & 0b11;
@@ -109,7 +110,7 @@ pub fn read_literals_header(input: &[u8]) -> Result<LiteralsHeader, DecodeError>
     }
 }
 
-pub fn decode_literals<'input, 'workspace>(
+pub(crate) fn decode_literals<'input, 'workspace>(
     input: &'input [u8],
     format: FrameFormat,
     huffman_table: &mut HuffmanDecodeTable,
@@ -190,7 +191,7 @@ pub fn decode_literals<'input, 'workspace>(
     }
 }
 
-pub struct LiteralSectionPair {
+pub(crate) struct LiteralSectionPair {
     pub first_count: usize,
     pub first_bytes_used: usize,
     pub second_count: usize,

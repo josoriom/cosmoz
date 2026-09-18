@@ -1,6 +1,6 @@
 [package]
 name = "cosmoz"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 description = "Pure Rust zstd compressor and decompressor, no_std core, native and wasm"
@@ -17,19 +17,17 @@ authors = [
 crate-type = ["rlib"]
 
 [features]
-default = ["levels", "checksum", "encoder"]
-alloc = []
-std = ["alloc"]
+default = ["checksum"]
+checksum = []
+compression = []
+std = []
 parallel = ["std"]
 wasm-exports = []
-levels = []
-checksum = []
-encoder = []
 
 [dependencies]
 
 [dev-dependencies]
-cosmoz = { path = ".", features = ["std"] }
+cosmoz = { path = ".", features = ["std", "compression"] }
 
 [profile.release]
 opt-level = 3

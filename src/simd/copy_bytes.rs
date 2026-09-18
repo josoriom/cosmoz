@@ -1,4 +1,4 @@
-pub fn copy_bytes(source: &[u8], destination: &mut [u8]) {
+pub(crate) fn copy_bytes(source: &[u8], destination: &mut [u8]) {
     assert_eq!(source.len(), destination.len());
     #[cfg(target_arch = "aarch64")]
     unsafe {
@@ -20,6 +20,7 @@ pub fn copy_bytes(source: &[u8], destination: &mut [u8]) {
     copy_bytes_scalar(source, destination);
 }
 
+#[allow(dead_code)]
 fn copy_bytes_scalar(source: &[u8], destination: &mut [u8]) {
     let length = source.len();
     let mut position = 0usize;
@@ -207,7 +208,8 @@ unsafe fn copy_bytes_overshoot_simd128(source: *const u8, destination: *mut u8, 
     }
 }
 
-pub fn run_self_tests() -> Option<u32> {
+#[cfg(any(test, feature = "wasm-exports"))]
+pub(crate) fn run_self_tests() -> Option<u32> {
     let lengths = [0usize, 1, 15, 16, 17, 31, 32, 33, 63, 64, 65];
     let mut state = 0x1234_5678u32;
     let mut source = [0u8; 96];
@@ -270,6 +272,7 @@ pub fn run_self_tests() -> Option<u32> {
     None
 }
 
+#[cfg(any(test, feature = "wasm-exports"))]
 fn xorshift_next(state: &mut u32) -> u32 {
     let mut x = *state;
     x ^= x << 13;

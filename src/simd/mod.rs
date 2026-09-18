@@ -1,8 +1,8 @@
-pub mod copy_bytes;
-#[cfg(feature = "encoder")]
-pub mod count_matching_bytes;
-#[cfg(feature = "encoder")]
-pub mod histogram;
-pub mod row_tag_match;
+pub(crate) mod copy_bytes;
+#[cfg(feature = "compression")]
+pub(crate) mod count_matching_bytes;
+#[cfg(feature = "compression")]
+pub(crate) mod histogram;
+pub(crate) mod row_tag_match;
 #[cfg(feature = "checksum")]
-pub mod xxhash3_stripes;
+pub(crate) mod xxhash3_stripes;

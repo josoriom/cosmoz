@@ -1,11 +1,11 @@
-pub struct RepeatOffsets {
+pub(crate) struct RepeatOffsets {
     pub first: u32,
     pub second: u32,
     pub third: u32,
 }
 
 impl RepeatOffsets {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         RepeatOffsets {
             first: 1,
             second: 4,
@@ -13,7 +13,7 @@ impl RepeatOffsets {
         }
     }
 
-    pub fn get_offset(&mut self, offset_value: u32, literal_length: u32) -> u32 {
+    pub(crate) fn get_offset(&mut self, offset_value: u32, literal_length: u32) -> u32 {
         if offset_value > 3 {
             let offset = offset_value - 3;
             self.third = self.second;
@@ -70,7 +70,8 @@ impl Default for RepeatOffsets {
 
 impl RepeatOffsets {
     #[inline]
-    pub fn get_offset_value(&mut self, offset: u32, literal_length: u32) -> u32 {
+    #[cfg(feature = "compression")]
+    pub(crate) fn get_offset_value(&mut self, offset: u32, literal_length: u32) -> u32 {
         debug_assert!(offset != 0, "offset must not be zero");
 
         let matching_code = if literal_length != 0 {

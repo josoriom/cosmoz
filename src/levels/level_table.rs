@@ -1,13 +1,13 @@
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Strategy {
+pub(crate) enum Strategy {
     Fast,
     Lazy2,
-    #[cfg(all(feature = "levels", feature = "alloc"))]
+    #[cfg(feature = "compression")]
     Ultra2,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct LevelParameters {
+pub(crate) struct LevelParameters {
     pub window_log: u8,
     pub chain_log: u8,
     pub hash_log: u8,
@@ -17,15 +17,13 @@ pub struct LevelParameters {
     pub strategy: Strategy,
 }
 
-#[cfg(all(feature = "levels", feature = "alloc"))]
-pub const SUPPORTED_LEVELS: [u8; 4] = [1, 9, 12, 22];
-#[cfg(all(feature = "levels", not(feature = "alloc")))]
-pub const SUPPORTED_LEVELS: [u8; 3] = [1, 9, 12];
-#[cfg(not(feature = "levels"))]
-pub const SUPPORTED_LEVELS: [u8; 1] = [1];
-pub const DEFAULT_LEVEL: u8 = SUPPORTED_LEVELS[0];
+#[cfg(feature = "compression")]
+pub(crate) const SUPPORTED_LEVELS: [u8; 4] = [1, 9, 12, 22];
+#[cfg(not(feature = "compression"))]
+pub(crate) const SUPPORTED_LEVELS: [u8; 1] = [1];
+pub(crate) const DEFAULT_LEVEL: u8 = SUPPORTED_LEVELS[0];
 
-pub const fn level_one_parameters() -> LevelParameters {
+pub(crate) const fn level_one_parameters() -> LevelParameters {
     LevelParameters {
         window_log: 20,
         chain_log: 13,
@@ -37,7 +35,7 @@ pub const fn level_one_parameters() -> LevelParameters {
     }
 }
 
-#[cfg(feature = "levels")]
+#[cfg(feature = "compression")]
 const fn level_nine_parameters() -> LevelParameters {
     LevelParameters {
         window_log: 22,
@@ -50,7 +48,7 @@ const fn level_nine_parameters() -> LevelParameters {
     }
 }
 
-#[cfg(feature = "levels")]
+#[cfg(feature = "compression")]
 const fn level_twelve_parameters() -> LevelParameters {
     LevelParameters {
         window_log: 22,
@@ -63,7 +61,7 @@ const fn level_twelve_parameters() -> LevelParameters {
     }
 }
 
-#[cfg(all(feature = "levels", feature = "alloc"))]
+#[cfg(feature = "compression")]
 const fn level_twenty_two_parameters() -> LevelParameters {
     LevelParameters {
         window_log: 27,
@@ -76,7 +74,7 @@ const fn level_twenty_two_parameters() -> LevelParameters {
     }
 }
 
-#[cfg(all(feature = "levels", feature = "alloc"))]
+#[cfg(feature = "compression")]
 const fn level_twenty_two_parameters_for_input_length(input_length: usize) -> LevelParameters {
     let (window_log, chain_log, hash_log, search_log) = if input_length <= SMALL_INPUT_LENGTH {
         (14, 15, 15, 10)
@@ -98,34 +96,34 @@ const fn level_twenty_two_parameters_for_input_length(input_length: usize) -> Le
     }
 }
 
-#[cfg(all(feature = "levels", feature = "alloc"))]
+#[cfg(feature = "compression")]
 const SMALL_INPUT_LENGTH: usize = 16 * 1024;
-#[cfg(all(feature = "levels", feature = "alloc"))]
+#[cfg(feature = "compression")]
 const MEDIUM_INPUT_LENGTH: usize = 128 * 1024;
-#[cfg(all(feature = "levels", feature = "alloc"))]
+#[cfg(feature = "compression")]
 const LARGE_INPUT_LENGTH: usize = 256 * 1024;
-#[cfg(all(feature = "levels", feature = "alloc"))]
+#[cfg(feature = "compression")]
 const MIN_HASH_LOG: u8 = 6;
-#[cfg(all(feature = "levels", feature = "alloc"))]
+#[cfg(feature = "compression")]
 const MIN_WINDOW_LOG: u8 = 10;
-#[cfg(all(feature = "levels", feature = "alloc"))]
+#[cfg(feature = "compression")]
 const MAX_RESIZED_INPUT_LENGTH: usize = 1 << 30;
 
-pub const fn get_level_parameters(level: u8) -> Option<LevelParameters> {
+pub(crate) const fn get_level_parameters(level: u8) -> Option<LevelParameters> {
     match level {
         1 => Some(level_one_parameters()),
-        #[cfg(feature = "levels")]
+        #[cfg(feature = "compression")]
         9 => Some(level_nine_parameters()),
-        #[cfg(feature = "levels")]
+        #[cfg(feature = "compression")]
         12 => Some(level_twelve_parameters()),
-        #[cfg(all(feature = "levels", feature = "alloc"))]
+        #[cfg(feature = "compression")]
         22 => Some(level_twenty_two_parameters()),
         _ => None,
     }
 }
 
-#[cfg(all(feature = "levels", feature = "alloc"))]
-pub fn get_level_parameters_for_input_length(
+#[cfg(feature = "compression")]
+pub(crate) fn get_level_parameters_for_input_length(
     level: u8,
     input_length: usize,
 ) -> Option<LevelParameters> {
@@ -136,7 +134,7 @@ pub fn get_level_parameters_for_input_length(
     Some(shrink_parameters_to_input_length(parameters, input_length))
 }
 
-#[cfg(all(feature = "levels", feature = "alloc"))]
+#[cfg(feature = "compression")]
 fn shrink_parameters_to_input_length(
     parameters: LevelParameters,
     input_length: usize,
@@ -199,7 +197,7 @@ mod tests {
         assert_eq!(parameters.strategy, Strategy::Lazy2);
     }
 
-    #[cfg(all(feature = "levels", feature = "alloc"))]
+    #[cfg(feature = "compression")]
     #[test]
     fn level_twenty_two_shrinks_like_libzstd_for_a_five_megabyte_input() {
         let parameters = get_level_parameters_for_input_length(22, 5_103_183).unwrap();

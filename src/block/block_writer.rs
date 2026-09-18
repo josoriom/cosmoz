@@ -1,7 +1,7 @@
-#[cfg(all(feature = "alloc", feature = "levels"))]
+#[cfg(feature = "compression")]
 use alloc::vec::Vec;
 
-#[cfg(all(feature = "alloc", feature = "levels"))]
+#[cfg(feature = "compression")]
 use crate::block::block_splitter;
 use crate::{
     block::{
@@ -16,10 +16,10 @@ use crate::{
     levels::MatchFinder,
 };
 
-#[cfg(all(feature = "alloc", feature = "levels"))]
+#[cfg(feature = "compression")]
 const MIN_LEVEL_FOR_BLOCK_SPLITTING: u8 = 6;
 
-pub fn write_block(
+pub(crate) fn write_block(
     input: &[u8],
     block_start: usize,
     format: FrameFormat,
@@ -65,7 +65,7 @@ pub fn write_block(
 
     let table_reuse_allowed = block_start != 0;
 
-    #[cfg(all(feature = "alloc", feature = "levels"))]
+    #[cfg(feature = "compression")]
     if workspace.level >= MIN_LEVEL_FOR_BLOCK_SPLITTING {
         let block_split = block_splitter::split_block(
             &workspace.sequences[..sequence_count],
@@ -191,7 +191,7 @@ fn commit_single_block(
     }
 }
 
-#[cfg(all(feature = "alloc", feature = "levels"))]
+#[cfg(feature = "compression")]
 #[allow(clippy::too_many_arguments)]
 fn write_block_as_split_pieces(
     block_content: &[u8],

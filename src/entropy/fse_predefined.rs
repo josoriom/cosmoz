@@ -1,24 +1,24 @@
 use crate::entropy::fse_decode_table::{FseDecodeTable, build_fse_decode_table};
 
-pub const LITERAL_LENGTH_ACCURACY_LOG: usize = 6;
-pub const MATCH_LENGTH_ACCURACY_LOG: usize = 6;
-pub const OFFSET_ACCURACY_LOG: usize = 5;
+pub(crate) const LITERAL_LENGTH_ACCURACY_LOG: usize = 6;
+pub(crate) const MATCH_LENGTH_ACCURACY_LOG: usize = 6;
+pub(crate) const OFFSET_ACCURACY_LOG: usize = 5;
 
-pub const LITERAL_LENGTH_DEFAULT_COUNTS: [i16; 36] = [
+pub(crate) const LITERAL_LENGTH_DEFAULT_COUNTS: [i16; 36] = [
     4, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 2, 1, 1, 1, 1, 1,
     -1, -1, -1, -1,
 ];
 
-pub const MATCH_LENGTH_DEFAULT_COUNTS: [i16; 53] = [
+pub(crate) const MATCH_LENGTH_DEFAULT_COUNTS: [i16; 53] = [
     1, 4, 3, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, -1, -1, -1, -1, -1, -1, -1,
 ];
 
-pub const OFFSET_DEFAULT_COUNTS: [i16; 29] = [
+pub(crate) const OFFSET_DEFAULT_COUNTS: [i16; 29] = [
     1, 1, 1, 1, 1, 1, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, -1, -1, -1, -1, -1,
 ];
 
-pub fn build_predefined_literal_length_table(table: &mut FseDecodeTable) {
+pub(crate) fn build_predefined_literal_length_table(table: &mut FseDecodeTable) {
     build_fse_decode_table(
         &LITERAL_LENGTH_DEFAULT_COUNTS,
         LITERAL_LENGTH_ACCURACY_LOG,
@@ -27,7 +27,7 @@ pub fn build_predefined_literal_length_table(table: &mut FseDecodeTable) {
     .expect("literal length default distribution always builds a valid table");
 }
 
-pub fn build_predefined_match_length_table(table: &mut FseDecodeTable) {
+pub(crate) fn build_predefined_match_length_table(table: &mut FseDecodeTable) {
     build_fse_decode_table(
         &MATCH_LENGTH_DEFAULT_COUNTS,
         MATCH_LENGTH_ACCURACY_LOG,
@@ -36,7 +36,7 @@ pub fn build_predefined_match_length_table(table: &mut FseDecodeTable) {
     .expect("match length default distribution always builds a valid table");
 }
 
-pub fn build_predefined_offset_table(table: &mut FseDecodeTable) {
+pub(crate) fn build_predefined_offset_table(table: &mut FseDecodeTable) {
     build_fse_decode_table(&OFFSET_DEFAULT_COUNTS, OFFSET_ACCURACY_LOG, table)
         .expect("offset default distribution always builds a valid table");
 }

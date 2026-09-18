@@ -7,7 +7,7 @@ use crate::{
     error::DecodeError,
 };
 
-pub fn decode_one_stream(
+pub(crate) fn decode_one_stream(
     input: &[u8],
     table: &HuffmanDecodeTable,
     output: &mut [u8],
@@ -23,7 +23,8 @@ pub fn decode_one_stream(
     Ok(())
 }
 
-pub fn decode_many_streams(
+#[cfg(test)]
+pub(crate) fn decode_many_streams(
     input: &[u8],
     table: &HuffmanDecodeTable,
     stream_count: usize,
@@ -33,7 +34,7 @@ pub fn decode_many_streams(
     decode_many_streams_with_slack(input, table, stream_count, output, regenerated_size)
 }
 
-pub fn decode_many_streams_with_slack(
+pub(crate) fn decode_many_streams_with_slack(
     input: &[u8],
     table: &HuffmanDecodeTable,
     stream_count: usize,
@@ -399,7 +400,8 @@ fn decode_eight_streams_interleaved(
     }
 }
 
-pub fn decode_four_streams(
+#[cfg(test)]
+pub(crate) fn decode_four_streams(
     input: &[u8],
     table: &HuffmanDecodeTable,
     output: &mut [u8],
@@ -407,7 +409,8 @@ pub fn decode_four_streams(
     decode_many_streams(input, table, 4, output)
 }
 
-pub fn decode_eight_streams(
+#[cfg(test)]
+pub(crate) fn decode_eight_streams(
     input: &[u8],
     table: &HuffmanDecodeTable,
     output: &mut [u8],

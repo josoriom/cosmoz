@@ -7,7 +7,7 @@ use crate::{
     frame::{chunk_index::ChunkIndex, frame_header::FrameFormat},
 };
 
-pub fn decode_chunks_in_parallel(
+pub(crate) fn decode_chunks_in_parallel(
     chunks_input: &[u8],
     index: &ChunkIndex,
     output: &mut [u8],

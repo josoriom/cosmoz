@@ -1,4 +1,4 @@
-pub fn count_matching_bytes(first: &[u8], second: &[u8]) -> usize {
+pub(crate) fn count_matching_bytes(first: &[u8], second: &[u8]) -> usize {
     #[cfg(target_arch = "aarch64")]
     {
         count_matching_bytes_neon(first, second)
@@ -129,7 +129,8 @@ fn count_matching_bytes_simd128(first: &[u8], second: &[u8]) -> usize {
     matched + count_matching_bytes_scalar(&first[matched..limit], &second[matched..limit])
 }
 
-pub fn run_self_tests() -> Option<u32> {
+#[cfg(any(test, feature = "wasm-exports"))]
+pub(crate) fn run_self_tests() -> Option<u32> {
     let mut first = [0u8; 96];
     let mut second = [0u8; 96];
     let mut state: u32 = 0x2545_F491;

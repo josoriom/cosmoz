@@ -1,23 +1,23 @@
 use crate::error::DecodeError;
 
-pub const MAX_BLOCK_SIZE: usize = 128 * 1024;
-pub const BLOCK_HEADER_LENGTH: usize = 3;
+pub(crate) const MAX_BLOCK_SIZE: usize = 128 * 1024;
+pub(crate) const BLOCK_HEADER_LENGTH: usize = 3;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum BlockType {
+pub(crate) enum BlockType {
     Raw,
     Rle,
     Compressed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BlockHeader {
+pub(crate) struct BlockHeader {
     pub block_type: BlockType,
     pub block_size: usize,
     pub is_last: bool,
 }
 
-pub fn read_block_header(input: &[u8]) -> Result<BlockHeader, DecodeError> {
+pub(crate) fn read_block_header(input: &[u8]) -> Result<BlockHeader, DecodeError> {
     if input.len() < BLOCK_HEADER_LENGTH {
         return Err(DecodeError::InputTooShort);
     }

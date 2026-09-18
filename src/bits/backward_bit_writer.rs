@@ -1,21 +1,21 @@
 use crate::{bits::forward_bit_writer::ForwardBitWriter, encode_error::EncodeError};
 
-pub struct BackwardBitWriter<'output> {
+pub(crate) struct BackwardBitWriter<'output> {
     bit_writer: ForwardBitWriter<'output>,
 }
 
 impl<'output> BackwardBitWriter<'output> {
-    pub fn new(output: &'output mut [u8]) -> Self {
+    pub(crate) fn new(output: &'output mut [u8]) -> Self {
         Self {
             bit_writer: ForwardBitWriter::new(output),
         }
     }
 
-    pub fn add_bits(&mut self, value: u64, count: usize) -> Result<(), EncodeError> {
+    pub(crate) fn add_bits(&mut self, value: u64, count: usize) -> Result<(), EncodeError> {
         self.bit_writer.add_bits(value, count)
     }
 
-    pub fn finish(mut self) -> Result<usize, EncodeError> {
+    pub(crate) fn finish(mut self) -> Result<usize, EncodeError> {
         self.bit_writer.add_bits(1, 1)?;
         self.bit_writer.finish()
     }

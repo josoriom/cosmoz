@@ -1,23 +1,21 @@
-#[cfg(feature = "alloc")]
-pub mod finder_tables;
-pub mod level_table;
+pub(crate) mod finder_tables;
+pub(crate) mod level_table;
 
 use crate::algorithms::fast::FastFinder;
-#[cfg(feature = "levels")]
+#[cfg(feature = "compression")]
 use crate::algorithms::lazy2::Lazy2Finder;
-#[cfg(all(feature = "levels", feature = "alloc"))]
+#[cfg(feature = "compression")]
 use crate::algorithms::ultra2::Ultra2Finder;
 use crate::block::{repeat_offsets::RepeatOffsets, sequence_record::SequenceRecord};
-#[cfg(feature = "alloc")]
 use finder_tables::TableStorage;
 use level_table::LevelParameters;
-#[cfg(all(feature = "levels", feature = "alloc"))]
+#[cfg(feature = "compression")]
 use level_table::Strategy;
 
-pub const MIN_MATCH: usize = 4;
-pub const MAX_OFFSET_LOG: u8 = 22;
+pub(crate) const MIN_MATCH: usize = 4;
+pub(crate) const MAX_OFFSET_LOG: u8 = 22;
 
-pub trait MatchFinder {
+pub(crate) trait MatchFinder {
     fn reset(&mut self, input_length: usize);
     fn find_sequences(
         &mut self,
@@ -26,29 +24,30 @@ pub trait MatchFinder {
         sequences: &mut [SequenceRecord],
         repeat_offsets: &mut RepeatOffsets,
     ) -> (usize, usize);
+    #[allow(dead_code)]
     fn window_log(&self) -> u8;
 }
 
 #[allow(clippy::large_enum_variant)]
-pub enum AnyFinder<'tables> {
+pub(crate) enum AnyFinder<'tables> {
     Fast(FastFinder),
-    #[cfg(feature = "levels")]
+    #[cfg(feature = "compression")]
     Lazy2(Lazy2Finder<'tables>),
-    #[cfg(all(feature = "levels", feature = "alloc"))]
+    #[cfg(feature = "compression")]
     Ultra2(Ultra2Finder<'tables>),
-    #[cfg(not(feature = "levels"))]
+    #[cfg(not(feature = "compression"))]
     Unused(core::marker::PhantomData<&'tables ()>),
 }
 
 impl AnyFinder<'static> {
-    pub const fn for_level(level_parameters: LevelParameters) -> Self {
+    pub(crate) const fn for_level(level_parameters: LevelParameters) -> Self {
         AnyFinder::Fast(FastFinder::new(level_parameters.window_log))
     }
 }
 
 impl<'tables> AnyFinder<'tables> {
-    #[cfg(all(feature = "levels", feature = "alloc"))]
-    pub fn for_level_with_storage(
+    #[cfg(feature = "compression")]
+    pub(crate) fn for_level_with_storage(
         level: u8,
         level_parameters: LevelParameters,
         storage: TableStorage<'tables>,
@@ -70,8 +69,8 @@ impl<'tables> AnyFinder<'tables> {
         }
     }
 
-    #[cfg(all(not(feature = "levels"), feature = "alloc"))]
-    pub fn for_level_with_storage(
+    #[cfg(not(feature = "compression"))]
+    pub(crate) fn for_level_with_storage(
         _level: u8,
         level_parameters: LevelParameters,
         _storage: TableStorage<'tables>,
@@ -84,11 +83,11 @@ impl MatchFinder for AnyFinder<'_> {
     fn reset(&mut self, input_length: usize) {
         match self {
             AnyFinder::Fast(finder) => finder.reset(input_length),
-            #[cfg(feature = "levels")]
+            #[cfg(feature = "compression")]
             AnyFinder::Lazy2(finder) => finder.reset(input_length),
-            #[cfg(all(feature = "levels", feature = "alloc"))]
+            #[cfg(feature = "compression")]
             AnyFinder::Ultra2(finder) => finder.reset(input_length),
-            #[cfg(not(feature = "levels"))]
+            #[cfg(not(feature = "compression"))]
             AnyFinder::Unused(_) => {}
         }
     }
@@ -104,15 +103,15 @@ impl MatchFinder for AnyFinder<'_> {
             AnyFinder::Fast(finder) => {
                 finder.find_sequences(input, block_start, sequences, repeat_offsets)
             }
-            #[cfg(feature = "levels")]
+            #[cfg(feature = "compression")]
             AnyFinder::Lazy2(finder) => {
                 finder.find_sequences(input, block_start, sequences, repeat_offsets)
             }
-            #[cfg(all(feature = "levels", feature = "alloc"))]
+            #[cfg(feature = "compression")]
             AnyFinder::Ultra2(finder) => {
                 finder.find_sequences(input, block_start, sequences, repeat_offsets)
             }
-            #[cfg(not(feature = "levels"))]
+            #[cfg(not(feature = "compression"))]
             AnyFinder::Unused(_) => (0, 0),
         }
     }
@@ -120,11 +119,11 @@ impl MatchFinder for AnyFinder<'_> {
     fn window_log(&self) -> u8 {
         match self {
             AnyFinder::Fast(finder) => finder.window_log(),
-            #[cfg(feature = "levels")]
+            #[cfg(feature = "compression")]
             AnyFinder::Lazy2(finder) => finder.window_log(),
-            #[cfg(all(feature = "levels", feature = "alloc"))]
+            #[cfg(feature = "compression")]
             AnyFinder::Ultra2(finder) => finder.window_log(),
-            #[cfg(not(feature = "levels"))]
+            #[cfg(not(feature = "compression"))]
             AnyFinder::Unused(_) => 0,
         }
     }

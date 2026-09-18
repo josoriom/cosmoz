@@ -12,10 +12,10 @@ use crate::{
     frame::{block_header::BLOCK_HEADER_LENGTH, frame_header::FrameFormat},
 };
 
-pub const MIN_SPLIT_SEQUENCES: usize = 32;
-pub const MIN_SPLIT_LITERAL_BYTES: usize = 4 * 1024;
-pub const MIN_SPLIT_BLOCK_BYTES: usize = 8 * 1024;
-pub const MAX_BLOCK_SPLITS: usize = 196;
+pub(crate) const MIN_SPLIT_SEQUENCES: usize = 32;
+pub(crate) const MIN_SPLIT_LITERAL_BYTES: usize = 4 * 1024;
+pub(crate) const MIN_SPLIT_BLOCK_BYTES: usize = 8 * 1024;
+pub(crate) const MAX_BLOCK_SPLITS: usize = 196;
 const MIN_SEQUENCES_TO_CONSIDER_SPLITTING: usize = 4;
 
 const LITERALS_HEADER_ESTIMATE: usize = 5;
@@ -166,7 +166,7 @@ fn trial_encoded_size(trial: &TrialCounts) -> usize {
     LITERALS_HEADER_ESTIMATE + literal_bytes + sequence_bytes
 }
 
-pub struct BlockSplit {
+pub(crate) struct BlockSplit {
     pub split_points: Vec<usize>,
     pub piece_literal_counts: Vec<Option<[u32; 256]>>,
 }
@@ -219,7 +219,7 @@ fn derive_splits(
     }
 }
 
-pub fn split_block(
+pub(crate) fn split_block(
     sequences: &[SequenceRecord],
     literals: &[u8],
     _format: FrameFormat,

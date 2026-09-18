@@ -53,7 +53,7 @@ impl Fingerprint {
     }
 }
 
-pub fn find_block_length(remaining: &[u8], savings: i64) -> usize {
+pub(crate) fn find_block_length(remaining: &[u8], savings: i64) -> usize {
     if remaining.len() < MAX_BLOCK_SIZE {
         return remaining.len();
     }

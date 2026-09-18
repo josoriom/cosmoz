@@ -22,7 +22,7 @@ const HASH_PRIME_FIVE: u64 = 0x00CF_1BBC_DCBB;
 const HASH_PRIME_SIX: u64 = 0xCF1B_BCDC_BF9B;
 const HASH_PRIME_SEVEN: u64 = 0x00CF_1BBC_DCBF_A563;
 
-pub struct Lazy2Finder<'tables> {
+pub(crate) struct Lazy2Finder<'tables> {
     positions: &'tables mut [u32],
     tags: &'tables mut [u8],
     row_log: u32,
@@ -85,7 +85,7 @@ fn offset_base_for_distance(distance: usize) -> usize {
 const REPEAT_OFFSET_BASE: usize = 1;
 
 impl<'tables> Lazy2Finder<'tables> {
-    pub fn new(
+    pub(crate) fn new(
         hash_table: &'tables mut [u32],
         chain_table: &'tables mut [u32],
         parameters: LevelParameters,

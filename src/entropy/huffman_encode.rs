@@ -4,11 +4,11 @@ use crate::{encode_error::EncodeError, entropy::huffman_encode_table::HuffmanEnc
 
 const MAX_STREAM_COUNT: usize = 8;
 
-pub fn encode_stream_capacity(input_length: usize) -> usize {
+pub(crate) fn encode_stream_capacity(input_length: usize) -> usize {
     input_length * 11 / 8 + 16
 }
 
-pub fn encode_one_stream(
+pub(crate) fn encode_one_stream(
     input: &[u8],
     table: &HuffmanEncodeTable,
     output: &mut [u8],
@@ -162,7 +162,7 @@ unsafe fn flush_container_unchecked(
     };
 }
 
-pub fn encode_many_streams(
+pub(crate) fn encode_many_streams(
     input: &[u8],
     table: &HuffmanEncodeTable,
     stream_count: usize,

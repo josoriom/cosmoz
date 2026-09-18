@@ -7,8 +7,8 @@ use crate::{
     simd::count_matching_bytes::count_matching_bytes_unchecked,
 };
 
-pub const HASH_LOG: usize = 16;
-pub const HASH_TABLE_SIZE: usize = 1 << HASH_LOG;
+pub(crate) const HASH_LOG: usize = 16;
+pub(crate) const HASH_TABLE_SIZE: usize = 1 << HASH_LOG;
 
 const HASH_MULTIPLIER: u64 = 227_718_039_650_203;
 const HASHED_BYTE_SHIFT: u32 = 16;
@@ -16,7 +16,7 @@ const HASH_READ_SIZE: usize = 8;
 const SKIP_SHIFT: usize = 6;
 const MIN_STEP: usize = 2;
 
-pub struct FastFinder {
+pub(crate) struct FastFinder {
     pub positions: [u32; HASH_TABLE_SIZE],
     pub window_log: u8,
     base: u32,
@@ -24,7 +24,7 @@ pub struct FastFinder {
 }
 
 impl FastFinder {
-    pub const fn new(window_log: u8) -> Self {
+    pub(crate) const fn new(window_log: u8) -> Self {
         FastFinder {
             positions: [0; HASH_TABLE_SIZE],
             window_log,

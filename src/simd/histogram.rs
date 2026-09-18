@@ -1,7 +1,8 @@
-pub fn count_symbols(input: &[u8], counts: &mut [u32; 256]) {
+pub(crate) fn count_symbols(input: &[u8], counts: &mut [u32; 256]) {
     count_symbols_four_tables(input, counts);
 }
 
+#[allow(dead_code)]
 fn count_symbols_scalar(input: &[u8], counts: &mut [u32; 256]) {
     for count in counts.iter_mut() {
         *count = 0;
@@ -42,6 +43,7 @@ fn accumulate_tail(input: &[u8], table: &mut [u32; 256]) {
     }
 }
 
+#[cfg(any(test, feature = "wasm-exports"))]
 fn xorshift_next(state: &mut u32) -> u32 {
     let mut x = *state;
     x ^= x << 13;
@@ -51,6 +53,7 @@ fn xorshift_next(state: &mut u32) -> u32 {
     x
 }
 
+#[cfg(any(test, feature = "wasm-exports"))]
 fn fill_random(buffer: &mut [u8], seed: u32) {
     let mut state = seed | 1;
     for byte in buffer.iter_mut() {
@@ -58,11 +61,15 @@ fn fill_random(buffer: &mut [u8], seed: u32) {
     }
 }
 
+#[cfg(any(test, feature = "wasm-exports"))]
 const SELF_TEST_LENGTHS: [usize; 13] = [0, 1, 15, 16, 17, 31, 32, 33, 63, 64, 65, 1000, 65536];
+#[cfg(any(test, feature = "wasm-exports"))]
 const MAX_SELF_TEST_LENGTH: usize = 65536;
+#[cfg(any(test, feature = "wasm-exports"))]
 const MAX_ALIGNMENT: usize = 15;
 
-pub fn run_self_tests() -> Option<u32> {
+#[cfg(any(test, feature = "wasm-exports"))]
+pub(crate) fn run_self_tests() -> Option<u32> {
     let mut test_index = 0u32;
     let mut buffer = [0u8; MAX_SELF_TEST_LENGTH + MAX_ALIGNMENT];
 

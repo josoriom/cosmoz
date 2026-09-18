@@ -3,24 +3,24 @@ use crate::{
     error::DecodeError,
 };
 
-pub const MAX_ACCURACY_LOG: usize = 9;
-pub const MAX_TABLE_SIZE: usize = 1 << MAX_ACCURACY_LOG;
-pub const MAX_SYMBOL_COUNT: usize = 256;
+pub(crate) const MAX_ACCURACY_LOG: usize = 9;
+pub(crate) const MAX_TABLE_SIZE: usize = 1 << MAX_ACCURACY_LOG;
+pub(crate) const MAX_SYMBOL_COUNT: usize = 256;
 
 #[derive(Clone, Copy, Default)]
-pub struct FseDecodeEntry {
+pub(crate) struct FseDecodeEntry {
     pub symbol: u8,
     pub bit_count: u8,
     pub next_state_base: u16,
 }
 
-pub struct FseDecodeTable {
+pub(crate) struct FseDecodeTable {
     pub entries: [FseDecodeEntry; MAX_TABLE_SIZE],
     pub accuracy_log: u8,
 }
 
 impl FseDecodeTable {
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             entries: [FseDecodeEntry {
                 symbol: 0,
@@ -31,7 +31,7 @@ impl FseDecodeTable {
         }
     }
 
-    pub fn table_size(&self) -> usize {
+    pub(crate) fn table_size(&self) -> usize {
         1usize << self.accuracy_log
     }
 }
@@ -42,24 +42,24 @@ impl Default for FseDecodeTable {
     }
 }
 
-pub struct FseDecodeState {
+pub(crate) struct FseDecodeState {
     pub state: usize,
 }
 
 impl FseDecodeState {
-    pub fn new(reader: &mut BackwardBitReader, table: &FseDecodeTable) -> Self {
+    pub(crate) fn new(reader: &mut BackwardBitReader, table: &FseDecodeTable) -> Self {
         let state = reader.read_bits(table.accuracy_log as usize) as usize;
         Self { state }
     }
 
     #[inline(always)]
-    pub fn get_symbol(&self, table: &FseDecodeTable) -> u8 {
+    pub(crate) fn get_symbol(&self, table: &FseDecodeTable) -> u8 {
         debug_assert!(self.state < table.entries.len());
         unsafe { get_entry_unchecked(table, self.state).symbol }
     }
 
     #[inline(always)]
-    pub fn update(&mut self, reader: &mut BackwardBitReader, table: &FseDecodeTable) {
+    pub(crate) fn update(&mut self, reader: &mut BackwardBitReader, table: &FseDecodeTable) {
         debug_assert!(self.state < table.entries.len());
         let entry = unsafe { get_entry_unchecked(table, self.state) };
         let read_bits = reader.read_bits(entry.bit_count as usize) as usize;
@@ -73,7 +73,7 @@ unsafe fn get_entry_unchecked(table: &FseDecodeTable, state: usize) -> FseDecode
     unsafe { *table.entries.get_unchecked(state) }
 }
 
-pub fn read_fse_table_description(
+pub(crate) fn read_fse_table_description(
     input: &[u8],
     max_accuracy_log: usize,
     max_symbol: usize,
@@ -166,7 +166,7 @@ fn push_normalized_count(
     Ok(())
 }
 
-pub fn build_rle_table(symbol: u8, table: &mut FseDecodeTable) {
+pub(crate) fn build_rle_table(symbol: u8, table: &mut FseDecodeTable) {
     table.accuracy_log = 0;
     table.entries[0] = FseDecodeEntry {
         symbol,
@@ -175,7 +175,7 @@ pub fn build_rle_table(symbol: u8, table: &mut FseDecodeTable) {
     };
 }
 
-pub fn build_fse_decode_table(
+pub(crate) fn build_fse_decode_table(
     normalized_counts: &[i16],
     accuracy_log: usize,
     table: &mut FseDecodeTable,

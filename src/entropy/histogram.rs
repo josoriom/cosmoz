@@ -1,14 +1,14 @@
 use crate::simd::histogram::count_symbols as count_symbols_kernel;
 
-pub fn count_symbols(input: &[u8], counts: &mut [u32; 256]) {
+pub(crate) fn count_symbols(input: &[u8], counts: &mut [u32; 256]) {
     count_symbols_kernel(input, counts);
 }
 
-pub fn count_used_symbols(counts: &[u32; 256]) -> usize {
+pub(crate) fn count_used_symbols(counts: &[u32; 256]) -> usize {
     counts.iter().filter(|&&count| count > 0).count()
 }
 
-pub fn find_largest_symbol(counts: &[u32; 256]) -> usize {
+pub(crate) fn find_largest_symbol(counts: &[u32; 256]) -> usize {
     counts
         .iter()
         .enumerate()
@@ -18,7 +18,9 @@ pub fn find_largest_symbol(counts: &[u32; 256]) -> usize {
         .unwrap_or(0)
 }
 
-pub fn run_self_tests() -> Option<u32> {
+#[cfg(any(test, feature = "wasm-exports"))]
+#[allow(dead_code)]
+pub(crate) fn run_self_tests() -> Option<u32> {
     crate::simd::histogram::run_self_tests()
 }
 

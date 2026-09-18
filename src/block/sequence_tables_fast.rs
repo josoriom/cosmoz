@@ -11,20 +11,20 @@ use crate::{
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
-pub struct FastSequenceEntry {
+pub(crate) struct FastSequenceEntry {
     pub next_state_base: u16,
     pub state_bits: u8,
     pub extra_bits: u8,
     pub base_value: u32,
 }
 
-pub struct FastSequenceTable {
+pub(crate) struct FastSequenceTable {
     pub entries: [FastSequenceEntry; MAX_TABLE_SIZE],
     pub accuracy_log: u8,
 }
 
 impl FastSequenceTable {
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             entries: [FastSequenceEntry {
                 next_state_base: 0,
@@ -36,7 +36,8 @@ impl FastSequenceTable {
         }
     }
 
-    pub fn table_size(&self) -> usize {
+    #[allow(dead_code)]
+    pub(crate) fn table_size(&self) -> usize {
         1usize << self.accuracy_log
     }
 }
@@ -47,7 +48,7 @@ impl Default for FastSequenceTable {
     }
 }
 
-pub struct FastSequenceTables {
+pub(crate) struct FastSequenceTables {
     pub literal_length: FastSequenceTable,
     pub offset: FastSequenceTable,
     pub match_length: FastSequenceTable,
@@ -57,7 +58,7 @@ pub struct FastSequenceTables {
 }
 
 impl FastSequenceTables {
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             literal_length: FastSequenceTable::new(),
             offset: FastSequenceTable::new(),
@@ -68,7 +69,7 @@ impl FastSequenceTables {
         }
     }
 
-    pub fn build_literal_length(&mut self, table: &FseDecodeTable) {
+    pub(crate) fn build_literal_length(&mut self, table: &FseDecodeTable) {
         let table_size = table.table_size();
         for cell_index in 0..table_size {
             let source_entry = table.entries[cell_index];
@@ -83,7 +84,7 @@ impl FastSequenceTables {
         self.literal_length_dirty = false;
     }
 
-    pub fn build_offset(&mut self, table: &FseDecodeTable) {
+    pub(crate) fn build_offset(&mut self, table: &FseDecodeTable) {
         let table_size = table.table_size();
         for cell_index in 0..table_size {
             let source_entry = table.entries[cell_index];
@@ -98,7 +99,7 @@ impl FastSequenceTables {
         self.offset_dirty = false;
     }
 
-    pub fn build_match_length(&mut self, table: &FseDecodeTable) {
+    pub(crate) fn build_match_length(&mut self, table: &FseDecodeTable) {
         let table_size = table.table_size();
         for cell_index in 0..table_size {
             let source_entry = table.entries[cell_index];
@@ -113,7 +114,7 @@ impl FastSequenceTables {
         self.match_length_dirty = false;
     }
 
-    pub fn build_all(&mut self, tables: &SequenceTables) {
+    pub(crate) fn build_all(&mut self, tables: &SequenceTables) {
         if tables.literal_length_ready && self.literal_length_dirty {
             self.build_literal_length(&tables.literal_length);
         }

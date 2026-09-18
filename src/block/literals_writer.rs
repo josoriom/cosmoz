@@ -12,10 +12,10 @@ use crate::{
     frame::frame_header::FrameFormat,
 };
 
-pub const ONE_STREAM_MAX_SIZE: usize = 1023;
-pub const MULTI_STREAM_MIN_SIZE: usize = 256;
+pub(crate) const ONE_STREAM_MAX_SIZE: usize = 1023;
+pub(crate) const MULTI_STREAM_MIN_SIZE: usize = 256;
 
-pub fn write_literals(
+pub(crate) fn write_literals(
     input: &[u8],
     format: FrameFormat,
     output: &mut [u8],

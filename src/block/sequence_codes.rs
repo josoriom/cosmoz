@@ -1,6 +1,7 @@
-pub const LITERAL_LENGTH_CODE_COUNT: usize = 36;
-pub const MATCH_LENGTH_CODE_COUNT: usize = 53;
-pub const OFFSET_CODE_COUNT: usize = 32;
+pub(crate) const LITERAL_LENGTH_CODE_COUNT: usize = 36;
+pub(crate) const MATCH_LENGTH_CODE_COUNT: usize = 53;
+#[cfg(feature = "compression")]
+pub(crate) const OFFSET_CODE_COUNT: usize = 32;
 
 const LITERAL_LENGTH_EXTRA_BASE: [(u32, u8); 20] = [
     (16, 1),
@@ -49,7 +50,7 @@ const MATCH_LENGTH_EXTRA_BASE: [(u32, u8); 21] = [
     (65539, 16),
 ];
 
-pub fn get_literal_length_base(code: u8) -> u32 {
+pub(crate) fn get_literal_length_base(code: u8) -> u32 {
     let code = (code as usize).min(LITERAL_LENGTH_CODE_COUNT - 1);
     if code <= 15 {
         code as u32
@@ -58,7 +59,7 @@ pub fn get_literal_length_base(code: u8) -> u32 {
     }
 }
 
-pub fn get_literal_length_extra_bits(code: u8) -> u8 {
+pub(crate) fn get_literal_length_extra_bits(code: u8) -> u8 {
     let code = (code as usize).min(LITERAL_LENGTH_CODE_COUNT - 1);
     if code <= 15 {
         0
@@ -67,7 +68,7 @@ pub fn get_literal_length_extra_bits(code: u8) -> u8 {
     }
 }
 
-pub fn get_match_length_base(code: u8) -> u32 {
+pub(crate) fn get_match_length_base(code: u8) -> u32 {
     let code = (code as usize).min(MATCH_LENGTH_CODE_COUNT - 1);
     if code <= 31 {
         code as u32 + 3
@@ -76,7 +77,7 @@ pub fn get_match_length_base(code: u8) -> u32 {
     }
 }
 
-pub fn get_match_length_extra_bits(code: u8) -> u8 {
+pub(crate) fn get_match_length_extra_bits(code: u8) -> u8 {
     let code = (code as usize).min(MATCH_LENGTH_CODE_COUNT - 1);
     if code <= 31 {
         0
@@ -85,22 +86,33 @@ pub fn get_match_length_extra_bits(code: u8) -> u8 {
     }
 }
 
-pub const MAX_LITERAL_LENGTH: u32 = 131071;
-pub const MIN_MATCH_LENGTH: u32 = 3;
-pub const MAX_MATCH_LENGTH: u32 = 131074;
+#[cfg(feature = "compression")]
+pub(crate) const MAX_LITERAL_LENGTH: u32 = 131071;
+#[cfg(feature = "compression")]
+pub(crate) const MIN_MATCH_LENGTH: u32 = 3;
+#[cfg(feature = "compression")]
+pub(crate) const MAX_MATCH_LENGTH: u32 = 131074;
 
+#[cfg(feature = "compression")]
 const fn highest_set_bit(value: u32) -> u32 {
     31 - value.leading_zeros()
 }
 
+#[cfg(feature = "compression")]
 const LITERAL_LENGTH_DIRECT_CODE_END: u32 = 15;
+#[cfg(feature = "compression")]
 const LITERAL_LENGTH_FIRST_TABLE_CODE: usize = 16;
+#[cfg(feature = "compression")]
 const LITERAL_LENGTH_POWER_OF_TWO_CODE_OFFSET: u32 = 19;
+#[cfg(feature = "compression")]
 const LITERAL_LENGTH_SMALL_CODE_START: u32 = 16;
+#[cfg(feature = "compression")]
 const LITERAL_LENGTH_SMALL_CODE_END: u32 = 63;
+#[cfg(feature = "compression")]
 const LITERAL_LENGTH_SMALL_CODE_LENGTH: usize =
     (LITERAL_LENGTH_SMALL_CODE_END - LITERAL_LENGTH_SMALL_CODE_START + 1) as usize;
 
+#[cfg(feature = "compression")]
 const fn find_small_literal_length_code(length: u32) -> u8 {
     let mut table_index = 0usize;
     while table_index < LITERAL_LENGTH_EXTRA_BASE.len() {
@@ -115,6 +127,7 @@ const fn find_small_literal_length_code(length: u32) -> u8 {
     (LITERAL_LENGTH_CODE_COUNT - 1) as u8
 }
 
+#[cfg(feature = "compression")]
 const fn build_literal_length_small_code_table() -> [u8; LITERAL_LENGTH_SMALL_CODE_LENGTH] {
     let mut table = [0u8; LITERAL_LENGTH_SMALL_CODE_LENGTH];
     let mut table_index = 0usize;
@@ -126,17 +139,25 @@ const fn build_literal_length_small_code_table() -> [u8; LITERAL_LENGTH_SMALL_CO
     table
 }
 
+#[cfg(feature = "compression")]
 const LITERAL_LENGTH_SMALL_CODE_TABLE: [u8; LITERAL_LENGTH_SMALL_CODE_LENGTH] =
     build_literal_length_small_code_table();
 
+#[cfg(feature = "compression")]
 const MATCH_LENGTH_DIRECT_CODE_END: u32 = MATCH_LENGTH_SMALL_CODE_START - 1;
+#[cfg(feature = "compression")]
 const MATCH_LENGTH_SMALL_CODE_START: u32 = 35;
+#[cfg(feature = "compression")]
 const MATCH_LENGTH_FIRST_TABLE_CODE: usize = 32;
+#[cfg(feature = "compression")]
 const MATCH_LENGTH_POWER_OF_TWO_CODE_OFFSET: u32 = 36;
+#[cfg(feature = "compression")]
 const MATCH_LENGTH_SMALL_CODE_END: u32 = 130;
+#[cfg(feature = "compression")]
 const MATCH_LENGTH_SMALL_CODE_LENGTH: usize =
     (MATCH_LENGTH_SMALL_CODE_END - MATCH_LENGTH_SMALL_CODE_START + 1) as usize;
 
+#[cfg(feature = "compression")]
 const fn find_small_match_length_code(length: u32) -> u8 {
     let mut table_index = 0usize;
     while table_index < MATCH_LENGTH_EXTRA_BASE.len() {
@@ -151,6 +172,7 @@ const fn find_small_match_length_code(length: u32) -> u8 {
     (MATCH_LENGTH_CODE_COUNT - 1) as u8
 }
 
+#[cfg(feature = "compression")]
 const fn build_match_length_small_code_table() -> [u8; MATCH_LENGTH_SMALL_CODE_LENGTH] {
     let mut table = [0u8; MATCH_LENGTH_SMALL_CODE_LENGTH];
     let mut table_index = 0usize;
@@ -162,10 +184,12 @@ const fn build_match_length_small_code_table() -> [u8; MATCH_LENGTH_SMALL_CODE_L
     table
 }
 
+#[cfg(feature = "compression")]
 const MATCH_LENGTH_SMALL_CODE_TABLE: [u8; MATCH_LENGTH_SMALL_CODE_LENGTH] =
     build_match_length_small_code_table();
 
-pub fn get_literal_length_code(length: u32) -> (u8, u32) {
+#[cfg(feature = "compression")]
+pub(crate) fn get_literal_length_code(length: u32) -> (u8, u32) {
     debug_assert!(length <= MAX_LITERAL_LENGTH);
     let length = length.min(MAX_LITERAL_LENGTH);
     if length <= LITERAL_LENGTH_DIRECT_CODE_END {
@@ -181,7 +205,8 @@ pub fn get_literal_length_code(length: u32) -> (u8, u32) {
     (code, length - (1u32 << highest_bit))
 }
 
-pub fn get_match_length_code(length: u32) -> (u8, u32) {
+#[cfg(feature = "compression")]
+pub(crate) fn get_match_length_code(length: u32) -> (u8, u32) {
     debug_assert!((MIN_MATCH_LENGTH..=MAX_MATCH_LENGTH).contains(&length));
     let length = length.clamp(MIN_MATCH_LENGTH, MAX_MATCH_LENGTH);
     if length <= MATCH_LENGTH_DIRECT_CODE_END {
@@ -196,14 +221,15 @@ pub fn get_match_length_code(length: u32) -> (u8, u32) {
     (code, length - ((1u32 << highest_bit) + MIN_MATCH_LENGTH))
 }
 
-pub fn get_offset_code(offset_value: u32) -> (u8, u32) {
+#[cfg(feature = "compression")]
+pub(crate) fn get_offset_code(offset_value: u32) -> (u8, u32) {
     debug_assert!(offset_value >= 1);
     let offset_value = offset_value.max(1);
     let code = highest_set_bit(offset_value) as u8;
     (code, offset_value - (1u32 << code))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "compression"))]
 mod tests {
     use super::*;
 

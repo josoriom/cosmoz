@@ -1,6 +1,6 @@
 const PRIME_32_1: u32 = 0x9E3779B1;
 
-pub fn accumulate_stripe(accumulators: &mut [u64; 8], stripe: &[u8; 64], secret: &[u8; 64]) {
+pub(crate) fn accumulate_stripe(accumulators: &mut [u64; 8], stripe: &[u8; 64], secret: &[u8; 64]) {
     #[cfg(target_arch = "aarch64")]
     unsafe {
         accumulate_stripe_neon(accumulators, stripe, secret)
@@ -21,7 +21,7 @@ pub fn accumulate_stripe(accumulators: &mut [u64; 8], stripe: &[u8; 64], secret:
     accumulate_stripe_scalar(accumulators, stripe, secret);
 }
 
-pub fn accumulate_stripes(
+pub(crate) fn accumulate_stripes(
     accumulators: &mut [u64; 8],
     input: &[u8],
     secret: &[u8],
@@ -38,7 +38,7 @@ pub fn accumulate_stripes(
     }
 }
 
-pub fn scramble_accumulators(accumulators: &mut [u64; 8], secret: &[u8; 64]) {
+pub(crate) fn scramble_accumulators(accumulators: &mut [u64; 8], secret: &[u8; 64]) {
     #[cfg(target_arch = "aarch64")]
     unsafe {
         scramble_accumulators_neon(accumulators, secret)
@@ -59,10 +59,12 @@ pub fn scramble_accumulators(accumulators: &mut [u64; 8], secret: &[u8; 64]) {
     scramble_accumulators_scalar(accumulators, secret);
 }
 
+#[allow(dead_code)]
 fn read_u64_le(bytes: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
 }
 
+#[allow(dead_code)]
 fn accumulate_stripe_scalar(accumulators: &mut [u64; 8], stripe: &[u8; 64], secret: &[u8; 64]) {
     let mut lane = 0usize;
     while lane < 8 {
@@ -77,6 +79,7 @@ fn accumulate_stripe_scalar(accumulators: &mut [u64; 8], stripe: &[u8; 64], secr
     }
 }
 
+#[allow(dead_code)]
 fn scramble_accumulators_scalar(accumulators: &mut [u64; 8], secret: &[u8; 64]) {
     let mut lane = 0usize;
     while lane < 8 {
@@ -269,7 +272,8 @@ unsafe fn scramble_accumulators_simd128(accumulators: &mut [u64; 8], secret: &[u
     }
 }
 
-pub fn run_self_tests() -> Option<u32> {
+#[cfg(any(test, feature = "wasm-exports"))]
+pub(crate) fn run_self_tests() -> Option<u32> {
     let mut state = 0x9E37_79B9u32;
     let mut test_index = 0u32;
     let mut case = 0usize;
@@ -310,12 +314,14 @@ pub fn run_self_tests() -> Option<u32> {
     None
 }
 
+#[cfg(any(test, feature = "wasm-exports"))]
 fn xorshift_u64(state: &mut u32) -> u64 {
     let high = xorshift_next(state);
     let low = xorshift_next(state);
     ((high as u64) << 32) | (low as u64)
 }
 
+#[cfg(any(test, feature = "wasm-exports"))]
 fn xorshift_next(state: &mut u32) -> u32 {
     let mut x = *state;
     x ^= x << 13;

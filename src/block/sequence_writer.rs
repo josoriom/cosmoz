@@ -24,7 +24,7 @@ use crate::{
     frame::frame_header::FrameFormat,
 };
 
-pub struct SequenceEncodeTables {
+pub(crate) struct SequenceEncodeTables {
     pub literal_length: FseEncodeTable,
     pub offset: FseEncodeTable,
     pub match_length: FseEncodeTable,
@@ -34,7 +34,7 @@ pub struct SequenceEncodeTables {
 }
 
 impl SequenceEncodeTables {
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             literal_length: FseEncodeTable::new(),
             offset: FseEncodeTable::new(),
@@ -53,7 +53,7 @@ impl Default for SequenceEncodeTables {
 }
 
 impl SequenceEncodeTables {
-    pub fn snapshot(&self) -> Self {
+    pub(crate) fn snapshot(&self) -> Self {
         Self {
             literal_length: clone_fse_encode_table(&self.literal_length),
             offset: clone_fse_encode_table(&self.offset),
@@ -75,7 +75,7 @@ fn clone_fse_encode_table(table: &FseEncodeTable) -> FseEncodeTable {
     }
 }
 
-pub fn write_sequences(
+pub(crate) fn write_sequences(
     sequences: &[SequenceRecord],
     format: FrameFormat,
     output: &mut [u8],

@@ -2,7 +2,7 @@ use core::cell::Cell;
 
 use crate::error::DecodeError;
 
-pub struct BackwardBitReader<'input> {
+pub(crate) struct BackwardBitReader<'input> {
     input: &'input [u8],
     container: Cell<u64>,
     bits_in_container: Cell<usize>,
@@ -11,7 +11,7 @@ pub struct BackwardBitReader<'input> {
 }
 
 impl<'input> BackwardBitReader<'input> {
-    pub fn new(input: &'input [u8]) -> Result<Self, DecodeError> {
+    pub(crate) fn new(input: &'input [u8]) -> Result<Self, DecodeError> {
         let last_byte = *input.last().ok_or(DecodeError::InputTooShort)?;
         let padding_bit_position =
             find_padding_bit_position(last_byte).ok_or(DecodeError::CorruptBitstream)?;
@@ -38,13 +38,13 @@ impl<'input> BackwardBitReader<'input> {
         })
     }
 
-    pub fn read_bits(&mut self, count: usize) -> u64 {
+    pub(crate) fn read_bits(&mut self, count: usize) -> u64 {
         let value = self.peek_bits(count);
         self.skip_bits(count);
         value
     }
 
-    pub fn peek_bits(&self, count: usize) -> u64 {
+    pub(crate) fn peek_bits(&self, count: usize) -> u64 {
         debug_assert!(count <= 56);
         if count == 0 {
             return 0;
@@ -63,7 +63,7 @@ impl<'input> BackwardBitReader<'input> {
         }
     }
 
-    pub fn skip_bits(&mut self, count: usize) {
+    pub(crate) fn skip_bits(&mut self, count: usize) {
         if count > self.bits_in_container.get() {
             self.load_more_bytes();
         }
@@ -76,19 +76,19 @@ impl<'input> BackwardBitReader<'input> {
         }
     }
 
-    pub fn refill(&mut self) {
+    pub(crate) fn refill(&mut self) {
         self.load_more_bytes();
     }
 
-    pub fn bits_left(&self) -> usize {
+    pub(crate) fn bits_left(&self) -> usize {
         self.bits_in_container.get() + self.byte_position.get() * 8
     }
 
-    pub fn is_finished(&self) -> bool {
+    pub(crate) fn is_finished(&self) -> bool {
         self.bits_left() == 0 && !self.has_overflowed.get()
     }
 
-    pub fn has_overflowed(&self) -> bool {
+    pub(crate) fn has_overflowed(&self) -> bool {
         self.has_overflowed.get()
     }
 
