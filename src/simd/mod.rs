@@ -4,5 +4,3 @@ pub(crate) mod count_matching_bytes;
 #[cfg(feature = "compression")]
 pub(crate) mod histogram;
 pub(crate) mod row_tag_match;
-#[cfg(feature = "checksum")]
-pub(crate) mod xxhash3_stripes;

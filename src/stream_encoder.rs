@@ -6,7 +6,6 @@ use crate::{
     encoder::{EncodeWorkspace, find_next_block_length},
     frame::{
         block_header::MAX_BLOCK_SIZE,
-        frame_header::FrameFormat,
         frame_writer::{MAX_FRAME_HEADER_LENGTH, write_frame_header},
     },
     levels::{MAX_OFFSET_LOG, MatchFinder},
@@ -98,7 +97,7 @@ impl StreamEncoder {
         #[cfg(feature = "checksum")]
         if self.with_checksum {
             let mut checksum = [0u8; ZSTD_CHECKSUM_LENGTH];
-            write_checksum(&mut checksum, FrameFormat::Zstd, self.hasher.finish())?;
+            write_checksum(&mut checksum, self.hasher.finish())?;
             output.extend_from_slice(&checksum);
         }
         self.finished = true;
@@ -111,13 +110,7 @@ impl StreamEncoder {
         }
         let window_log = self.workspace.level_parameters.window_log.min(MAX_OFFSET_LOG);
         let mut header = [0u8; MAX_FRAME_HEADER_LENGTH];
-        let header_length = write_frame_header(
-            &mut header,
-            FrameFormat::Zstd,
-            None,
-            window_log,
-            self.with_checksum,
-        )?;
+        let header_length = write_frame_header(&mut header, None, window_log, self.with_checksum)?;
         output.extend_from_slice(&header[..header_length]);
         self.header_written = true;
         Ok(())
@@ -147,7 +140,6 @@ impl StreamEncoder {
             let written = write_block(
                 &self.segment[..block_end],
                 self.block_start,
-                FrameFormat::Zstd,
                 is_last,
                 &mut self.block_output,
                 &mut self.workspace,

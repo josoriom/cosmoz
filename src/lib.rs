@@ -18,10 +18,6 @@ mod frame;
 mod hash;
 #[cfg(feature = "compression")]
 mod levels;
-#[cfg(feature = "parallel")]
-mod parallel_decoder;
-#[cfg(all(feature = "parallel", feature = "compression"))]
-mod parallel_encoder;
 mod simd;
 #[cfg(feature = "compression")]
 mod stream_encoder;

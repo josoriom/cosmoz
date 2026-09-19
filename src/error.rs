@@ -28,9 +28,7 @@ impl DecodeError {
                 "the decompressed data would exceed the configured maximum output size"
             }
             DecodeError::TruncatedInput => "the input stream ended without a complete frame",
-            DecodeError::BadMagicNumber => {
-                "the input does not start with a zstd or cosmoz frame signature"
-            }
+            DecodeError::BadMagicNumber => "the input does not start with a zstd frame signature",
             DecodeError::BadFrameHeader => "the frame header is invalid or inconsistent with its content",
             DecodeError::DictionaryNotSupported => {
                 "the frame uses a dictionary, which cosmoz does not support"

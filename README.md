@@ -13,7 +13,6 @@ cargo add cosmoz --features std,compression
 | `checksum` | yes | Frame checksums. |
 | `compression` | no | Compression, levels 1, 9, 12, 22. Without it the crate only decompresses. |
 | `std` | no | `Compressor::to` and `Decompressor::from` over `std::io`. |
-| `parallel` | no | Parallel chunk decode. |
 | `wasm-exports` | no | The C-ABI functions used by the wasm32 build. |
 
 ## Compress and decompress
@@ -33,7 +32,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 `CompressOptions::default()`:
 - `level: 12`
 - `checksum: true`
-- `format: Format::Zstd`
 
 `DecompressOptions::default()`:
 - `verify_checksum: true`

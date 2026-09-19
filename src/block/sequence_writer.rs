@@ -21,7 +21,6 @@ use crate::{
             MATCH_LENGTH_DEFAULT_COUNTS, OFFSET_ACCURACY_LOG, OFFSET_DEFAULT_COUNTS,
         },
     },
-    frame::frame_header::FrameFormat,
 };
 
 pub(crate) struct SequenceEncodeTables {
@@ -77,10 +76,8 @@ fn clone_fse_encode_table(table: &FseEncodeTable) -> FseEncodeTable {
 
 pub(crate) fn write_sequences(
     sequences: &[SequenceRecord],
-    format: FrameFormat,
     output: &mut [u8],
     tables: &mut SequenceEncodeTables,
-    scratch: &mut [u8],
 ) -> Result<usize, EncodeError> {
     let sequence_count = sequences.len();
     if sequence_count == 0 {
@@ -139,11 +136,7 @@ pub(crate) fn write_sequences(
         .get_mut(header_length..)
         .ok_or(EncodeError::OutputTooSmall)?;
 
-    let body_length = if format == FrameFormat::Cosmoz && sequence_count >= 2 {
-        write_two_streams(sequences, tables, body_output, scratch)?
-    } else {
-        write_one_stream(sequences, tables, body_output)?
-    };
+    let body_length = write_one_stream(sequences, tables, body_output)?;
 
     Ok(header_length + body_length)
 }
@@ -358,66 +351,10 @@ fn write_one_stream(
     tables: &SequenceEncodeTables,
     output: &mut [u8],
 ) -> Result<usize, EncodeError> {
-    write_stream_over_indices(sequences, 0, 1, sequences.len(), tables, output)
-}
-
-fn write_two_streams(
-    sequences: &[SequenceRecord],
-    tables: &SequenceEncodeTables,
-    output: &mut [u8],
-    scratch: &mut [u8],
-) -> Result<usize, EncodeError> {
-    let sequence_count = sequences.len();
-    let first_stream_count = sequence_count.div_ceil(2);
-    let second_stream_count = sequence_count / 2;
-
-    let first_stream_length =
-        write_stream_over_indices(sequences, 0, 2, first_stream_count, tables, scratch)?;
-
-    let length_bytes = (first_stream_length as u32).to_le_bytes();
-    output
-        .get_mut(0..4)
-        .ok_or(EncodeError::OutputTooSmall)?
-        .copy_from_slice(&length_bytes);
-
-    let after_length = output.get_mut(4..).ok_or(EncodeError::OutputTooSmall)?;
-    let first_stream_destination = after_length
-        .get_mut(..first_stream_length)
-        .ok_or(EncodeError::OutputTooSmall)?;
-    first_stream_destination.copy_from_slice(
-        scratch
-            .get(..first_stream_length)
-            .ok_or(EncodeError::OutputTooSmall)?,
-    );
-
-    let second_stream_output = after_length
-        .get_mut(first_stream_length..)
-        .ok_or(EncodeError::OutputTooSmall)?;
-    let second_stream_length = write_stream_over_indices(
-        sequences,
-        1,
-        2,
-        second_stream_count,
-        tables,
-        second_stream_output,
-    )?;
-
-    Ok(4 + first_stream_length + second_stream_length)
-}
-
-fn write_stream_over_indices(
-    sequences: &[SequenceRecord],
-    start_index: usize,
-    stride: usize,
-    count: usize,
-    tables: &SequenceEncodeTables,
-    output: &mut [u8],
-) -> Result<usize, EncodeError> {
-    let record_at = |position: usize| sequences[start_index + position * stride];
-
+    let count = sequences.len();
     let mut writer = BackwardBitWriter::new(output);
 
-    let last = record_at(count - 1);
+    let last = sequences[count - 1];
     let (last_literal_length_code, last_literal_length_extra) =
         get_literal_length_code(last.literal_length);
     let (last_match_length_code, last_match_length_extra) =
@@ -440,7 +377,7 @@ fn write_stream_over_indices(
     writer.add_bits(last_offset_extra as u64, last_offset_code as usize)?;
 
     for position in (0..count - 1).rev() {
-        let record = record_at(position);
+        let record = sequences[position];
         let (literal_length_code, literal_length_extra) =
             get_literal_length_code(record.literal_length);
         let (match_length_code, match_length_extra) = get_match_length_code(record.match_length);
@@ -533,9 +470,8 @@ mod tests {
         bitstream: &[u8],
         sequence_count: usize,
         tables: &SequenceTables,
-        format: FrameFormat,
     ) -> Vec<(u32, u32, u32)> {
-        let mut decoder = SequenceDecoder::new(bitstream, tables, sequence_count, format).unwrap();
+        let mut decoder = SequenceDecoder::new(bitstream, tables, sequence_count).unwrap();
         let mut repeat_offsets = RepeatOffsets::new();
         let mut decoded = Vec::new();
         while let Some(sequence) = decoder.next_sequence(&mut repeat_offsets) {
@@ -556,17 +492,9 @@ mod tests {
         let expected = resolve_offset_values(&records);
 
         let mut output = [0u8; 8192];
-        let mut scratch = [0u8; 8192];
         let mut tables = SequenceEncodeTables::new();
 
-        let written = write_sequences(
-            &records,
-            FrameFormat::Zstd,
-            &mut output,
-            &mut tables,
-            &mut scratch,
-        )
-        .unwrap();
+        let written = write_sequences(&records, &mut output, &mut tables).unwrap();
 
         let header = read_sequences_header(&output[..written]).unwrap();
         assert_eq!(header.sequence_count, records.len());
@@ -584,102 +512,6 @@ mod tests {
             &output[bitstream_start..written],
             header.sequence_count,
             &decode_tables,
-            FrameFormat::Zstd,
-        );
-
-        assert_eq!(decoded, expected);
-    }
-
-    #[test]
-    fn round_trips_as_two_cosmoz_streams() {
-        let records = build_test_records();
-        let expected = resolve_offset_values(&records);
-
-        let mut output = [0u8; 8192];
-        let mut scratch = [0u8; 8192];
-        let mut tables = SequenceEncodeTables::new();
-
-        let written = write_sequences(
-            &records,
-            FrameFormat::Cosmoz,
-            &mut output,
-            &mut tables,
-            &mut scratch,
-        )
-        .unwrap();
-
-        let header = read_sequences_header(&output[..written]).unwrap();
-        assert_eq!(header.sequence_count, records.len());
-
-        let mut decode_tables = SequenceTables::new();
-        let table_bytes = read_sequence_tables(
-            &output[header.header_length..written],
-            &header,
-            &mut decode_tables,
-        )
-        .unwrap();
-
-        let bitstream_start = header.header_length + table_bytes;
-        assert!(written - bitstream_start >= 4);
-
-        let first_stream_length = u32::from_le_bytes([
-            output[bitstream_start],
-            output[bitstream_start + 1],
-            output[bitstream_start + 2],
-            output[bitstream_start + 3],
-        ]) as usize;
-        assert!(first_stream_length > 0);
-        assert!(first_stream_length < written - bitstream_start - 4);
-
-        let decoded = decode_all(
-            &output[bitstream_start..written],
-            header.sequence_count,
-            &decode_tables,
-            FrameFormat::Cosmoz,
-        );
-
-        assert_eq!(decoded, expected);
-    }
-
-    #[test]
-    fn cosmoz_with_one_sequence_has_no_length_field() {
-        let records = vec![SequenceRecord {
-            literal_length: 5,
-            match_length: 10,
-            offset_value: 4,
-        }];
-        let expected = resolve_offset_values(&records);
-
-        let mut output = [0u8; 256];
-        let mut scratch = [0u8; 256];
-        let mut tables = SequenceEncodeTables::new();
-
-        let written = write_sequences(
-            &records,
-            FrameFormat::Cosmoz,
-            &mut output,
-            &mut tables,
-            &mut scratch,
-        )
-        .unwrap();
-
-        let header = read_sequences_header(&output[..written]).unwrap();
-        assert_eq!(header.sequence_count, 1);
-
-        let mut decode_tables = SequenceTables::new();
-        let table_bytes = read_sequence_tables(
-            &output[header.header_length..written],
-            &header,
-            &mut decode_tables,
-        )
-        .unwrap();
-
-        let bitstream_start = header.header_length + table_bytes;
-        let decoded = decode_all(
-            &output[bitstream_start..written],
-            header.sequence_count,
-            &decode_tables,
-            FrameFormat::Cosmoz,
         );
 
         assert_eq!(decoded, expected);
@@ -708,17 +540,9 @@ mod tests {
         let expected = resolve_offset_values(&records);
 
         let mut output = [0u8; 16384];
-        let mut scratch = [0u8; 16384];
         let mut tables = SequenceEncodeTables::new();
 
-        let written = write_sequences(
-            &records,
-            FrameFormat::Zstd,
-            &mut output,
-            &mut tables,
-            &mut scratch,
-        )
-        .unwrap();
+        let written = write_sequences(&records, &mut output, &mut tables).unwrap();
 
         assert_eq!(tables.literal_length_mode, TableMode::Compressed);
 
@@ -738,7 +562,6 @@ mod tests {
             &output[bitstream_start..written],
             header.sequence_count,
             &decode_tables,
-            FrameFormat::Zstd,
         );
 
         assert_eq!(decoded, expected);

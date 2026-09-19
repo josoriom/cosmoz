@@ -2,7 +2,7 @@ use core::ptr;
 
 use crate::{encode_error::EncodeError, entropy::huffman_encode_table::HuffmanEncodeTable};
 
-const MAX_STREAM_COUNT: usize = 8;
+const STREAM_COUNT: usize = 4;
 
 pub(crate) fn encode_stream_capacity(input_length: usize) -> usize {
     input_length * 11 / 8 + 16
@@ -162,26 +162,22 @@ unsafe fn flush_container_unchecked(
     };
 }
 
-pub(crate) fn encode_many_streams(
+pub(crate) fn encode_four_streams(
     input: &[u8],
     table: &HuffmanEncodeTable,
-    stream_count: usize,
     output: &mut [u8],
 ) -> Result<usize, EncodeError> {
-    if stream_count == 0 || stream_count > MAX_STREAM_COUNT {
-        return Err(EncodeError::BadOptions);
-    }
-    let segment_size = get_segment_size(input.len(), stream_count);
-    let jump_table_size = (stream_count - 1) * 2;
+    let segment_size = input.len().div_ceil(STREAM_COUNT);
+    let jump_table_size = (STREAM_COUNT - 1) * 2;
     if output.len() < jump_table_size {
         return Err(EncodeError::OutputTooSmall);
     }
-    let mut stream_sizes = [0u16; MAX_STREAM_COUNT];
+    let mut stream_sizes = [0u16; STREAM_COUNT];
 
     let mut position = jump_table_size;
     let mut input_position = 0usize;
-    for (stream_index, stream_size_slot) in stream_sizes[..stream_count].iter_mut().enumerate() {
-        let is_last_stream = stream_index == stream_count - 1;
+    for (stream_index, stream_size_slot) in stream_sizes.iter_mut().enumerate() {
+        let is_last_stream = stream_index == STREAM_COUNT - 1;
         let segment_end = if is_last_stream {
             input.len()
         } else {
@@ -204,16 +200,12 @@ pub(crate) fn encode_many_streams(
     }
 
     let jump_table = &mut output[..jump_table_size];
-    for (stream_index, &size) in stream_sizes[..stream_count - 1].iter().enumerate() {
+    for (stream_index, &size) in stream_sizes[..STREAM_COUNT - 1].iter().enumerate() {
         let offset = stream_index * 2;
         jump_table[offset..offset + 2].copy_from_slice(&size.to_le_bytes());
     }
 
     Ok(position)
-}
-
-fn get_segment_size(input_length: usize, stream_count: usize) -> usize {
-    input_length.div_ceil(stream_count)
 }
 
 #[cfg(test)]
@@ -222,7 +214,7 @@ mod tests {
     use crate::entropy::{
         fse_decode_table::FseDecodeTable,
         histogram::count_symbols,
-        huffman_decode::{decode_many_streams, decode_one_stream},
+        huffman_decode::{decode_four_streams, decode_one_stream},
         huffman_decode_table::{HuffmanDecodeTable, read_huffman_table},
         huffman_encode_table::{build_huffman_encode_table, write_direct_weights},
     };
@@ -282,10 +274,10 @@ mod tests {
         let decode_table = build_decode_table(&encode_table);
 
         let mut encoded = [0u8; 2048];
-        let bytes_written = encode_many_streams(&text, &encode_table, 4, &mut encoded).unwrap();
+        let bytes_written = encode_four_streams(&text, &encode_table, &mut encoded).unwrap();
 
         let mut decoded = vec![0u8; text.len()];
-        decode_many_streams(&encoded[..bytes_written], &decode_table, 4, &mut decoded).unwrap();
+        decode_four_streams(&encoded[..bytes_written], &decode_table, &mut decoded).unwrap();
 
         assert_eq!(decoded, text);
     }
@@ -371,20 +363,5 @@ mod tests {
             decode_one_stream(&fast_output[..fast_bytes], &decode_table, &mut decoded).unwrap();
             assert_eq!(decoded, input);
         }
-    }
-
-    #[test]
-    fn encodes_and_decodes_eight_streams() {
-        let text = sample_text();
-        let encode_table = build_encode_table(&text);
-        let decode_table = build_decode_table(&encode_table);
-
-        let mut encoded = [0u8; 2048];
-        let bytes_written = encode_many_streams(&text, &encode_table, 8, &mut encoded).unwrap();
-
-        let mut decoded = vec![0u8; text.len()];
-        decode_many_streams(&encoded[..bytes_written], &decode_table, 8, &mut decoded).unwrap();
-
-        assert_eq!(decoded, text);
     }
 }

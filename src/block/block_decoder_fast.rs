@@ -6,7 +6,7 @@ use crate::{
         sequence_tables_fast::{FastSequenceEntry, FastSequenceTable, FastSequenceTables},
     },
     error::DecodeError,
-    frame::{block_header::MAX_BLOCK_SIZE, frame_header::FrameFormat},
+    frame::block_header::MAX_BLOCK_SIZE,
     simd::copy_bytes::{copy_bytes_overshoot_unchecked, copy_match_overshoot_unchecked},
 };
 
@@ -327,124 +327,6 @@ pub(crate) unsafe fn decode_sequences_unchecked(
     Ok(position)
 }
 
-#[allow(clippy::missing_safety_doc)]
-#[allow(clippy::too_many_arguments)]
-unsafe fn decode_sequences_two_streams_unchecked(
-    first_input: &[u8],
-    second_input: &[u8],
-    tables: &FastSequenceTables,
-    first_count: usize,
-    second_count: usize,
-    literals: *const u8,
-    literal_count: usize,
-    output_base: *mut u8,
-    output_position: usize,
-    output_end: usize,
-    repeat_offsets: &mut RepeatOffsets,
-) -> Result<usize, DecodeError> {
-    debug_assert!(!first_input.is_empty());
-    debug_assert!(!second_input.is_empty());
-
-    let mut first_padding = [0u8; 16];
-    let mut second_padding = [0u8; 16];
-    let mut first_stream = unsafe {
-        SequenceStreamState::new_unchecked(first_input, &mut first_padding, tables, first_count)?
-    };
-    let mut second_stream = unsafe {
-        SequenceStreamState::new_unchecked(second_input, &mut second_padding, tables, second_count)?
-    };
-
-    let mut position = output_position;
-    let mut literal_cursor = 0usize;
-    let mut read_from_second_next = false;
-
-    loop {
-        let take_from_second = read_from_second_next && second_stream.sequences_left > 0;
-        let stream = if !take_from_second && first_stream.sequences_left > 0 {
-            read_from_second_next = true;
-            &mut first_stream
-        } else if second_stream.sequences_left > 0 {
-            read_from_second_next = false;
-            &mut second_stream
-        } else {
-            break;
-        };
-        let sequence = unsafe { decode_one_sequence_unchecked(stream, tables, repeat_offsets)? };
-
-        unsafe {
-            execute_sequence_unchecked(
-                output_base,
-                &mut position,
-                literals,
-                &mut literal_cursor,
-                literal_count,
-                &sequence,
-                output_position,
-                output_end,
-            )?;
-        }
-    }
-
-    if !first_stream.reader.is_finished() || !second_stream.reader.is_finished() {
-        return Err(DecodeError::CorruptBitstream);
-    }
-
-    if literal_cursor < literal_count {
-        let remaining = literal_count - literal_cursor;
-        let after_position = position
-            .checked_add(remaining)
-            .ok_or(DecodeError::BlockTooLarge)?;
-        if after_position - output_position > MAX_BLOCK_SIZE {
-            return Err(DecodeError::BlockTooLarge);
-        }
-        if after_position > output_end {
-            return Err(DecodeError::OutputTooSmall);
-        }
-        unsafe {
-            copy_literals_unchecked(
-                literals,
-                literal_cursor,
-                remaining,
-                output_base.add(position),
-                output_end - after_position < FAST_PATH_SLACK,
-            );
-        }
-        position = after_position;
-    }
-
-    Ok(position)
-}
-
-type CosmozStreamSplit<'input> = (&'input [u8], &'input [u8], usize, usize);
-
-fn split_cosmoz_streams(
-    input: &[u8],
-    sequence_count: usize,
-) -> Result<CosmozStreamSplit<'_>, DecodeError> {
-    let length_bytes = input.get(0..4).ok_or(DecodeError::BadSequencesHeader)?;
-    let first_stream_length = u32::from_le_bytes([
-        length_bytes[0],
-        length_bytes[1],
-        length_bytes[2],
-        length_bytes[3],
-    ]) as usize;
-    let remaining = input.get(4..).ok_or(DecodeError::BadSequencesHeader)?;
-    let first_stream_input = remaining
-        .get(..first_stream_length)
-        .ok_or(DecodeError::BadSequencesHeader)?;
-    let second_stream_input = remaining
-        .get(first_stream_length..)
-        .ok_or(DecodeError::BadSequencesHeader)?;
-    let first_stream_count = sequence_count.div_ceil(2);
-    let second_stream_count = sequence_count / 2;
-    Ok((
-        first_stream_input,
-        second_stream_input,
-        first_stream_count,
-        second_stream_count,
-    ))
-}
-
 /// # Safety
 ///
 /// `literals` must be followed by at least 16 readable bytes within its own
@@ -458,44 +340,19 @@ pub(crate) unsafe fn decode_sequences_fast_path_unchecked(
     literal_count: usize,
     output: &mut [u8],
     output_position: usize,
-    format: FrameFormat,
     repeat_offsets: &mut RepeatOffsets,
 ) -> Result<usize, DecodeError> {
     debug_assert!(sequence_count > 0);
 
     let output_end = output.len();
     let output_base = output.as_mut_ptr();
-    let literals_pointer = literals;
-
-    if format == FrameFormat::Cosmoz && sequence_count >= 2 {
-        let (first_input, second_input, first_count, second_count) =
-            split_cosmoz_streams(bitstream, sequence_count)?;
-        if first_input.is_empty() || second_input.is_empty() {
-            return Err(DecodeError::BadSequencesHeader);
-        }
-        return unsafe {
-            decode_sequences_two_streams_unchecked(
-                first_input,
-                second_input,
-                tables,
-                first_count,
-                second_count,
-                literals_pointer,
-                literal_count,
-                output_base,
-                output_position,
-                output_end,
-                repeat_offsets,
-            )
-        };
-    }
 
     unsafe {
         decode_sequences_unchecked(
             bitstream,
             tables,
             sequence_count,
-            literals_pointer,
+            literals,
             literal_count,
             output_base,
             output_position,

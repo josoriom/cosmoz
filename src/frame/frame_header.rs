@@ -1,22 +1,13 @@
 use crate::error::DecodeError;
 
 pub(crate) const ZSTD_MAGIC_NUMBER: u32 = 0xFD2FB528;
-pub(crate) const COSMOZ_MAGIC_NUMBER: u32 = 0x4F4D534F;
 pub(crate) const SKIPPABLE_MAGIC_MASK: u32 = 0xFFFFFFF0;
 pub(crate) const SKIPPABLE_MAGIC_BASE: u32 = 0x184D2A50;
 pub(crate) const MAX_WINDOW_SIZE: u64 = 1 << 31;
 pub(crate) const ZSTD_CHECKSUM_LENGTH: usize = 4;
-pub(crate) const COSMOZ_CHECKSUM_LENGTH: usize = 8;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FrameFormat {
-    Zstd,
-    Cosmoz,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FrameHeader {
-    pub format: FrameFormat,
     pub window_size: u64,
     pub content_size: Option<u64>,
     pub dictionary_id: u32,
@@ -27,21 +18,11 @@ pub(crate) struct FrameHeader {
 
 impl FrameHeader {
     pub(crate) fn checksum_length(&self) -> usize {
-        if !self.has_checksum {
-            return 0;
+        if self.has_checksum {
+            ZSTD_CHECKSUM_LENGTH
+        } else {
+            0
         }
-        match self.format {
-            FrameFormat::Zstd => ZSTD_CHECKSUM_LENGTH,
-            FrameFormat::Cosmoz => COSMOZ_CHECKSUM_LENGTH,
-        }
-    }
-}
-
-fn read_frame_format(magic_number: u32) -> Result<FrameFormat, DecodeError> {
-    match magic_number {
-        ZSTD_MAGIC_NUMBER => Ok(FrameFormat::Zstd),
-        COSMOZ_MAGIC_NUMBER => Ok(FrameFormat::Cosmoz),
-        _ => Err(DecodeError::BadMagicNumber),
     }
 }
 
@@ -49,8 +30,9 @@ pub(crate) fn read_frame_header(input: &[u8]) -> Result<FrameHeader, DecodeError
     if input.len() < 4 {
         return Err(DecodeError::InputTooShort);
     }
-    let magic_number = read_little_endian_u32(&input[0..4]);
-    let format = read_frame_format(magic_number)?;
+    if read_little_endian_u32(&input[0..4]) != ZSTD_MAGIC_NUMBER {
+        return Err(DecodeError::BadMagicNumber);
+    }
     if input.len() < 5 {
         return Err(DecodeError::InputTooShort);
     }
@@ -113,12 +95,7 @@ pub(crate) fn read_frame_header(input: &[u8]) -> Result<FrameHeader, DecodeError
         return Err(DecodeError::WindowTooLarge);
     }
 
-    if format == FrameFormat::Cosmoz && content_size.is_none() {
-        return Err(DecodeError::BadFrameHeader);
-    }
-
     Ok(FrameHeader {
-        format,
         window_size,
         content_size,
         dictionary_id,
@@ -228,7 +205,6 @@ mod tests {
         assert_eq!(
             frame_header,
             FrameHeader {
-                format: FrameFormat::Zstd,
                 window_size: 64,
                 content_size: Some(64),
                 dictionary_id: 0,
@@ -246,7 +222,6 @@ mod tests {
         assert_eq!(
             frame_header,
             FrameHeader {
-                format: FrameFormat::Zstd,
                 window_size: 1 << 21,
                 content_size: None,
                 dictionary_id: 0,
@@ -273,7 +248,6 @@ mod tests {
         assert_eq!(
             frame_header,
             FrameHeader {
-                format: FrameFormat::Zstd,
                 window_size: 10,
                 content_size: Some(10),
                 dictionary_id: 0,
@@ -294,45 +268,18 @@ mod tests {
     }
 
     #[test]
-    fn reads_cosmoz_frame_header() {
-        let input = [0x4F, 0x53, 0x4D, 0x4F, 0x24, 0x40];
-        let frame_header = read_frame_header(&input).unwrap();
-        assert_eq!(
-            frame_header,
-            FrameHeader {
-                format: FrameFormat::Cosmoz,
-                window_size: 64,
-                content_size: Some(64),
-                dictionary_id: 0,
-                has_checksum: true,
-                single_segment: true,
-                header_length: 6,
-            }
-        );
-        assert_eq!(frame_header.checksum_length(), 8);
-    }
-
-    #[test]
-    fn checksum_length_depends_on_format_and_flag() {
+    fn checksum_length_depends_on_flag() {
         let zstd_with_checksum = read_frame_header(&ZSTD_LEVEL_ONE_HEADER).unwrap();
         assert_eq!(zstd_with_checksum.checksum_length(), 4);
 
         let zstd_without_checksum =
             read_frame_header(&[0x28, 0xB5, 0x2F, 0xFD, 0x00, 0x58]).unwrap();
         assert_eq!(zstd_without_checksum.checksum_length(), 0);
-
-        let cosmoz_with_checksum =
-            read_frame_header(&[0x4F, 0x53, 0x4D, 0x4F, 0x24, 0x40]).unwrap();
-        assert_eq!(cosmoz_with_checksum.checksum_length(), 8);
-
-        let cosmoz_without_checksum =
-            read_frame_header(&[0x4F, 0x53, 0x4D, 0x4F, 0x20, 0x0A]).unwrap();
-        assert_eq!(cosmoz_without_checksum.checksum_length(), 0);
     }
 
     #[test]
-    fn rejects_magic_one_bit_away_from_cosmoz() {
-        let input = [0x4E, 0x53, 0x4D, 0x4F, 0x24, 0x40];
+    fn rejects_magic_one_bit_away_from_zstd() {
+        let input = [0x29, 0xB5, 0x2F, 0xFD, 0x24, 0x40];
         assert_eq!(read_frame_header(&input), Err(DecodeError::BadMagicNumber));
     }
 

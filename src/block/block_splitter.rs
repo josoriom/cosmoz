@@ -9,7 +9,7 @@ use crate::{
         sequence_record::SequenceRecord,
     },
     entropy::histogram::count_symbols,
-    frame::{block_header::BLOCK_HEADER_LENGTH, frame_header::FrameFormat},
+    frame::block_header::BLOCK_HEADER_LENGTH,
 };
 
 pub(crate) const MIN_SPLIT_SEQUENCES: usize = 32;
@@ -219,11 +219,7 @@ fn derive_splits(
     }
 }
 
-pub(crate) fn split_block(
-    sequences: &[SequenceRecord],
-    literals: &[u8],
-    _format: FrameFormat,
-) -> BlockSplit {
+pub(crate) fn split_block(sequences: &[SequenceRecord], literals: &[u8]) -> BlockSplit {
     let mut block_split = BlockSplit {
         split_points: Vec::new(),
         piece_literal_counts: Vec::new(),
@@ -274,11 +270,7 @@ mod tests {
     fn returns_no_splits_for_few_sequences() {
         let sequences = [make_sequence(1, 4, 1); 4];
         let literals = [0u8; 4];
-        assert!(
-            split_block(&sequences, &literals, FrameFormat::Zstd)
-                .split_points
-                .is_empty()
-        );
+        assert!(split_block(&sequences, &literals).split_points.is_empty());
     }
 
     #[test]
@@ -288,11 +280,7 @@ mod tests {
             sequences.push(make_sequence(1, 4, 1));
         }
         let literals = [0u8; 400];
-        assert!(
-            split_block(&sequences, &literals, FrameFormat::Zstd)
-                .split_points
-                .is_empty()
-        );
+        assert!(split_block(&sequences, &literals).split_points.is_empty());
     }
 
     #[test]
@@ -310,7 +298,7 @@ mod tests {
                 if index < 2000 { target } else { target + 40 };
         }
 
-        let splits = split_block(&sequences, &literals, FrameFormat::Zstd).split_points;
+        let splits = split_block(&sequences, &literals).split_points;
         assert!(!splits.is_empty());
         for &split in &splits {
             assert!(split > 0 && split < sequences.len());
@@ -325,10 +313,6 @@ mod tests {
             sequences.push(make_sequence(4, 4, 1));
             literals.extend_from_slice(b"abcd");
         }
-        assert!(
-            split_block(&sequences, &literals, FrameFormat::Zstd)
-                .split_points
-                .is_empty()
-        );
+        assert!(split_block(&sequences, &literals).split_points.is_empty());
     }
 }

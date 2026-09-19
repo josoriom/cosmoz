@@ -12,7 +12,7 @@ use crate::{
     encode_error::EncodeError,
     encoder::EncodeWorkspace,
     entropy::huffman_encode_table::HuffmanEncodeTable,
-    frame::{block_header::BlockType, frame_header::FrameFormat, frame_writer::write_block_header},
+    frame::{block_header::BlockType, frame_writer::write_block_header},
     levels::MatchFinder,
 };
 
@@ -22,7 +22,6 @@ const MIN_LEVEL_FOR_BLOCK_SPLITTING: u8 = 6;
 pub(crate) fn write_block(
     input: &[u8],
     block_start: usize,
-    format: FrameFormat,
     is_last: bool,
     output: &mut [u8],
     workspace: &mut EncodeWorkspace,
@@ -70,13 +69,11 @@ pub(crate) fn write_block(
         let block_split = block_splitter::split_block(
             &workspace.sequences[..sequence_count],
             &workspace.literals[..literal_count],
-            format,
         );
 
         if block_split.split_points.is_empty() {
             return commit_single_block(
                 block_content,
-                format,
                 is_last,
                 output,
                 workspace,
@@ -98,7 +95,6 @@ pub(crate) fn write_block(
 
             match write_block_as_split_pieces(
                 block_content,
-                format,
                 is_last,
                 output,
                 workspace,
@@ -121,7 +117,6 @@ pub(crate) fn write_block(
 
     commit_single_block(
         block_content,
-        format,
         is_last,
         output,
         workspace,
@@ -140,7 +135,6 @@ pub(crate) fn write_block(
 #[allow(clippy::too_many_arguments)]
 fn commit_single_block(
     block_content: &[u8],
-    format: FrameFormat,
     is_last: bool,
     output: &mut [u8],
     workspace: &mut EncodeWorkspace,
@@ -157,13 +151,11 @@ fn commit_single_block(
     let compressed_body_length = write_compressed_block_body(
         &workspace.literals[..literal_count],
         &workspace.sequences[..sequence_count],
-        format,
         &mut workspace.block_scratch,
         &mut workspace.huffman_table,
         &mut workspace.weight_fse_table,
         &mut workspace.sequence_tables,
         table_reuse_allowed,
-        &mut workspace.entropy_scratch,
         literal_counts,
     );
 
@@ -195,7 +187,6 @@ fn commit_single_block(
 #[allow(clippy::too_many_arguments)]
 fn write_block_as_split_pieces(
     block_content: &[u8],
-    format: FrameFormat,
     is_last: bool,
     output: &mut [u8],
     workspace: &mut EncodeWorkspace,
@@ -250,13 +241,11 @@ fn write_block_as_split_pieces(
         let body_length = write_compressed_block_body(
             &workspace.literals[piece_literal_start..piece_literal_end],
             &workspace.sequences[sequence_start..sequence_end],
-            format,
             &mut workspace.block_scratch,
             &mut workspace.huffman_table,
             &mut workspace.weight_fse_table,
             &mut workspace.sequence_tables,
             piece_table_reuse_allowed,
-            &mut workspace.entropy_scratch,
             piece_literal_counts[piece_index].as_ref(),
         );
 
@@ -370,18 +359,15 @@ fn collect_literals(
 fn write_compressed_block_body(
     literals: &[u8],
     sequences: &[SequenceRecord],
-    format: FrameFormat,
     output: &mut [u8],
     huffman_table: &mut HuffmanEncodeTable,
     weight_fse_table: &mut crate::entropy::fse_encode_table::FseEncodeTable,
     sequence_tables: &mut SequenceEncodeTables,
     table_reuse_allowed: bool,
-    scratch: &mut [u8],
     literal_counts: Option<&[u32; 256]>,
 ) -> Result<usize, EncodeError> {
     let literals_length = write_literals(
         literals,
-        format,
         output,
         huffman_table,
         weight_fse_table,
@@ -391,13 +377,7 @@ fn write_compressed_block_body(
     let sequences_output = output
         .get_mut(literals_length..)
         .ok_or(EncodeError::OutputTooSmall)?;
-    let sequences_length = write_sequences(
-        sequences,
-        format,
-        sequences_output,
-        sequence_tables,
-        scratch,
-    )?;
+    let sequences_length = write_sequences(sequences, sequences_output, sequence_tables)?;
     Ok(literals_length + sequences_length)
 }
 
@@ -422,9 +402,9 @@ behind the distant hills and the wind carries the scent of rain across the quiet
         text
     }
 
-    fn decode_one_block(payload: &[u8], expected_length: usize, format: FrameFormat) -> Vec<u8> {
+    fn decode_one_block(payload: &[u8], expected_length: usize) -> Vec<u8> {
         let mut workspace = Box::new(BlockWorkspace::new());
-        workspace.reset_history(format);
+        workspace.reset_history();
         let mut output = vec![0u8; expected_length];
         let (_, written) = decode_block_sequence(payload, &mut output, &mut workspace).unwrap();
         output.truncate(written);
@@ -435,10 +415,9 @@ behind the distant hills and the wind carries the scent of rain across the quiet
     fn writes_and_decodes_a_raw_block_for_empty_input() {
         let mut workspace = EncodeWorkspace::new_boxed();
         let mut output = [0u8; 16];
-        let written =
-            write_block(&[], 0, FrameFormat::Zstd, true, &mut output, &mut workspace).unwrap();
+        let written = write_block(&[], 0, true, &mut output, &mut workspace).unwrap();
         assert_eq!(written, 3);
-        let decoded = decode_one_block(&output[..written], 0, FrameFormat::Zstd);
+        let decoded = decode_one_block(&output[..written], 0);
         assert_eq!(decoded, Vec::<u8>::new());
     }
 
@@ -447,17 +426,9 @@ behind the distant hills and the wind carries the scent of rain across the quiet
         let input = vec![0x42u8; 5000];
         let mut workspace = EncodeWorkspace::new_boxed();
         let mut output = [0u8; 16];
-        let written = write_block(
-            &input,
-            0,
-            FrameFormat::Zstd,
-            true,
-            &mut output,
-            &mut workspace,
-        )
-        .unwrap();
+        let written = write_block(&input, 0, true, &mut output, &mut workspace).unwrap();
         assert_eq!(written, 4);
-        let decoded = decode_one_block(&output[..written], input.len(), FrameFormat::Zstd);
+        let decoded = decode_one_block(&output[..written], input.len());
         assert_eq!(decoded, input);
     }
 
@@ -466,17 +437,9 @@ behind the distant hills and the wind carries the scent of rain across the quiet
         let input = repeating_text(20 * 1024);
         let mut workspace = EncodeWorkspace::new_boxed();
         let mut output = vec![0u8; input.len() * 2 + 4096];
-        let written = write_block(
-            &input,
-            0,
-            FrameFormat::Cosmoz,
-            true,
-            &mut output,
-            &mut workspace,
-        )
-        .unwrap();
+        let written = write_block(&input, 0, true, &mut output, &mut workspace).unwrap();
         assert!(written < input.len());
-        let decoded = decode_one_block(&output[..written], input.len(), FrameFormat::Cosmoz);
+        let decoded = decode_one_block(&output[..written], input.len());
         assert_eq!(decoded, input);
     }
 
@@ -492,21 +455,13 @@ behind the distant hills and the wind carries the scent of rain across the quiet
         }
         let mut workspace = EncodeWorkspace::new_boxed();
         let mut output = vec![0u8; input.len() * 2 + 4096];
-        let written = write_block(
-            &input,
-            0,
-            FrameFormat::Zstd,
-            true,
-            &mut output,
-            &mut workspace,
-        )
-        .unwrap();
+        let written = write_block(&input, 0, true, &mut output, &mut workspace).unwrap();
         let header = read_block_header(&output[..written]).unwrap();
         assert_eq!(
             header.block_type,
             crate::frame::block_header::BlockType::Raw
         );
-        let decoded = decode_one_block(&output[..written], input.len(), FrameFormat::Zstd);
+        let decoded = decode_one_block(&output[..written], input.len());
         assert_eq!(decoded, input);
     }
 
@@ -515,16 +470,8 @@ behind the distant hills and the wind carries the scent of rain across the quiet
         let input = repeating_text(MAX_BLOCK_SIZE);
         let mut workspace = EncodeWorkspace::new_boxed();
         let mut output = vec![0u8; input.len() * 2 + 4096];
-        let written = write_block(
-            &input,
-            0,
-            FrameFormat::Cosmoz,
-            true,
-            &mut output,
-            &mut workspace,
-        )
-        .unwrap();
-        let decoded = decode_one_block(&output[..written], input.len(), FrameFormat::Cosmoz);
+        let written = write_block(&input, 0, true, &mut output, &mut workspace).unwrap();
+        let decoded = decode_one_block(&output[..written], input.len());
         assert_eq!(decoded, input);
     }
 }

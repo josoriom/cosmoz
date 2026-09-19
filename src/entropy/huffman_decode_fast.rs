@@ -210,31 +210,6 @@ pub(crate) unsafe fn decode_four_streams_unchecked(
     }
 }
 
-pub(crate) unsafe fn decode_eight_streams_unchecked(
-    streams: [&[u8]; 8],
-    table: &HuffmanDecodeTable,
-    output: *mut u8,
-    segment_sizes: [usize; 8],
-) -> Result<(), DecodeError> {
-    let mut padding_buffers = [[0u8; 16]; 8];
-    let mut cursors = [None; 8];
-    unsafe {
-        start_section_unchecked(
-            &streams,
-            &mut padding_buffers,
-            table,
-            output,
-            &segment_sizes,
-            &mut cursors,
-        )?;
-    }
-    let mut cursors = cursors.map(|cursor| cursor.unwrap());
-    unsafe {
-        decode_rounds_unchecked(&mut cursors);
-        finish_cursors_unchecked(&cursors)
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) unsafe fn decode_two_sections_unchecked(
     first_streams: [&[u8]; 4],
@@ -289,8 +264,8 @@ mod tests {
     use crate::entropy::{
         fse_decode_table::FseDecodeTable,
         histogram::count_symbols,
-        huffman_decode::decode_many_streams,
-        huffman_encode::encode_many_streams,
+        huffman_decode::decode_four_streams,
+        huffman_encode::encode_four_streams,
         huffman_encode_table::{HuffmanEncodeTable, build_huffman_encode_table},
     };
 
@@ -409,78 +384,12 @@ mod tests {
     fn decode_fast(
         encoded: &[u8],
         table: &HuffmanDecodeTable,
-        stream_count: usize,
         regenerated_size: usize,
     ) -> Result<Vec<u8>, DecodeError> {
         let mut output = vec![0u8; regenerated_size + 32];
-        let jump_table_size = (stream_count - 1) * 2;
-        let after_jump_table = &encoded[jump_table_size..];
-        let segment_size = regenerated_size.div_ceil(stream_count);
-
-        let mut stream_slices: Vec<&[u8]> = Vec::with_capacity(stream_count);
-        let mut segment_lengths: Vec<usize> = Vec::with_capacity(stream_count);
-        let mut remaining_input = after_jump_table;
-        let mut remaining_output = regenerated_size;
-        for stream_index in 0..stream_count {
-            let is_last = stream_index == stream_count - 1;
-            let stream = if is_last {
-                remaining_input
-            } else {
-                let stream_size =
-                    u16::from_le_bytes([encoded[stream_index * 2], encoded[stream_index * 2 + 1]])
-                        as usize;
-                let stream = &remaining_input[..stream_size];
-                remaining_input = &remaining_input[stream_size..];
-                stream
-            };
-            let segment_length = if is_last {
-                remaining_output
-            } else {
-                segment_size
-            };
-            remaining_output -= segment_length;
-            stream_slices.push(stream);
-            segment_lengths.push(segment_length);
-        }
-
-        let output_pointer = output.as_mut_ptr();
-        if stream_count == 4 {
-            let streams = [
-                stream_slices[0],
-                stream_slices[1],
-                stream_slices[2],
-                stream_slices[3],
-            ];
-            let segments = [
-                segment_lengths[0],
-                segment_lengths[1],
-                segment_lengths[2],
-                segment_lengths[3],
-            ];
-            unsafe { decode_four_streams_unchecked(streams, table, output_pointer, segments)? };
-        } else {
-            let streams = [
-                stream_slices[0],
-                stream_slices[1],
-                stream_slices[2],
-                stream_slices[3],
-                stream_slices[4],
-                stream_slices[5],
-                stream_slices[6],
-                stream_slices[7],
-            ];
-            let segments = [
-                segment_lengths[0],
-                segment_lengths[1],
-                segment_lengths[2],
-                segment_lengths[3],
-                segment_lengths[4],
-                segment_lengths[5],
-                segment_lengths[6],
-                segment_lengths[7],
-            ];
-            unsafe { decode_eight_streams_unchecked(streams, table, output_pointer, segments)? };
-        }
+        let (streams, segments) =
+            crate::entropy::huffman_decode::split_four_streams(encoded, regenerated_size)?;
+        unsafe { decode_four_streams_unchecked(streams, table, output.as_mut_ptr(), segments)? };
         output.truncate(regenerated_size);
         Ok(output)
     }
@@ -489,11 +398,10 @@ mod tests {
     fn fast_path_matches_checked_path_on_random_tables_and_inputs() {
         let mut random = XorshiftRandom::new(0x9E3779B97F4A7C15);
 
-        for case_index in 0..500 {
+        for _ in 0..500 {
             let (encode_table, decode_table) = build_tables(&mut random);
-            let stream_count = if case_index % 2 == 0 { 4 } else { 8 };
             let length = random.next_range(20000);
-            if length < stream_count * 4 {
+            if length < 16 {
                 continue;
             }
             let text = random_text(&mut random, &encode_table, length);
@@ -502,24 +410,22 @@ mod tests {
             count_symbols(&text, &mut counts);
 
             let mut encoded = vec![0u8; length * 2 + 4096];
-            let bytes_written =
-                match encode_many_streams(&text, &encode_table, stream_count, &mut encoded) {
-                    Ok(bytes_written) => bytes_written,
-                    Err(_) => continue,
-                };
+            let bytes_written = match encode_four_streams(&text, &encode_table, &mut encoded) {
+                Ok(bytes_written) => bytes_written,
+                Err(_) => continue,
+            };
             let encoded = &encoded[..bytes_written];
 
             let mut checked_output = vec![0u8; length];
-            let checked_result =
-                decode_many_streams(encoded, &decode_table, stream_count, &mut checked_output);
+            let checked_result = decode_four_streams(encoded, &decode_table, &mut checked_output);
 
-            let fast_result = decode_fast(encoded, &decode_table, stream_count, length);
+            let fast_result = decode_fast(encoded, &decode_table, length);
 
             match (checked_result, fast_result) {
                 (Ok(()), Ok(fast_output)) => assert_eq!(checked_output, fast_output),
                 (Err(checked_error), Err(fast_error)) => assert_eq!(checked_error, fast_error),
                 (checked, fast) => panic!(
-                    "fast and checked paths disagreed: checked={checked:?} fast={fast:?} length={length} stream_count={stream_count}"
+                    "fast and checked paths disagreed: checked={checked:?} fast={fast:?} length={length}"
                 ),
             }
         }
@@ -533,12 +439,12 @@ mod tests {
         let text = random_text(&mut random, &encode_table, length);
 
         let mut encoded = vec![0u8; length * 2 + 4096];
-        let bytes_written = encode_many_streams(&text, &encode_table, 4, &mut encoded).unwrap();
+        let bytes_written = encode_four_streams(&text, &encode_table, &mut encoded).unwrap();
         let truncated = &encoded[..bytes_written - 1];
 
         let mut checked_output = vec![0u8; length];
-        let checked_result = decode_many_streams(truncated, &decode_table, 4, &mut checked_output);
-        let fast_result = decode_fast(truncated, &decode_table, 4, length);
+        let checked_result = decode_four_streams(truncated, &decode_table, &mut checked_output);
+        let fast_result = decode_fast(truncated, &decode_table, length);
 
         assert!(checked_result.is_err());
         assert!(fast_result.is_err());
@@ -554,39 +460,31 @@ mod tests {
                 build_table_with_max_bits(&mut random, wanted_max_bits);
             assert_eq!(decode_table.max_bits, wanted_max_bits);
 
-            for stream_count in [4usize, 8usize] {
-                for &segment_length in &segment_lengths {
-                    let length = segment_length * stream_count;
-                    let text = random_text(&mut random, &encode_table, length);
+            for &segment_length in &segment_lengths {
+                let length = segment_length * 4;
+                let text = random_text(&mut random, &encode_table, length);
 
-                    let mut encoded = vec![0u8; length * 2 + 4096];
-                    let bytes_written =
-                        match encode_many_streams(&text, &encode_table, stream_count, &mut encoded)
-                        {
-                            Ok(bytes_written) => bytes_written,
-                            Err(_) => continue,
-                        };
-                    let encoded = &encoded[..bytes_written];
+                let mut encoded = vec![0u8; length * 2 + 4096];
+                let bytes_written = match encode_four_streams(&text, &encode_table, &mut encoded) {
+                    Ok(bytes_written) => bytes_written,
+                    Err(_) => continue,
+                };
+                let encoded = &encoded[..bytes_written];
 
-                    let mut checked_output = vec![0u8; length];
-                    let checked_result = decode_many_streams(
-                        encoded,
-                        &decode_table,
-                        stream_count,
-                        &mut checked_output,
-                    );
+                let mut checked_output = vec![0u8; length];
+                let checked_result =
+                    decode_four_streams(encoded, &decode_table, &mut checked_output);
 
-                    let fast_result = decode_fast(encoded, &decode_table, stream_count, length);
+                let fast_result = decode_fast(encoded, &decode_table, length);
 
-                    match (checked_result, fast_result) {
-                        (Ok(()), Ok(fast_output)) => assert_eq!(checked_output, fast_output),
-                        (Err(checked_error), Err(fast_error)) => {
-                            assert_eq!(checked_error, fast_error)
-                        }
-                        (checked, fast) => panic!(
-                            "fast and checked paths disagreed: checked={checked:?} fast={fast:?} max_bits={wanted_max_bits} segment_length={segment_length} stream_count={stream_count}"
-                        ),
+                match (checked_result, fast_result) {
+                    (Ok(()), Ok(fast_output)) => assert_eq!(checked_output, fast_output),
+                    (Err(checked_error), Err(fast_error)) => {
+                        assert_eq!(checked_error, fast_error)
                     }
+                    (checked, fast) => panic!(
+                        "fast and checked paths disagreed: checked={checked:?} fast={fast:?} max_bits={wanted_max_bits} segment_length={segment_length}"
+                    ),
                 }
             }
         }

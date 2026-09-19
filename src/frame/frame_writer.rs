@@ -1,13 +1,8 @@
-#[cfg(any(test, feature = "wasm-exports"))]
-use crate::frame::chunk_index::{CHUNK_COUNT_LENGTH, CHUNK_ENTRY_LENGTH, ChunkEntry};
 use crate::{
     encode_error::EncodeError,
     frame::{
         block_header::{BLOCK_HEADER_LENGTH, BlockType, MAX_BLOCK_SIZE},
-        frame_header::{
-            COSMOZ_CHECKSUM_LENGTH, COSMOZ_MAGIC_NUMBER, FrameFormat, ZSTD_CHECKSUM_LENGTH,
-            ZSTD_MAGIC_NUMBER,
-        },
+        frame_header::{ZSTD_CHECKSUM_LENGTH, ZSTD_MAGIC_NUMBER},
     },
 };
 
@@ -15,7 +10,6 @@ pub(crate) const MAX_FRAME_HEADER_LENGTH: usize = 14;
 
 pub(crate) fn write_frame_header(
     output: &mut [u8],
-    format: FrameFormat,
     content_size: Option<u64>,
     window_log: u8,
     with_checksum: bool,
@@ -33,11 +27,7 @@ pub(crate) fn write_frame_header(
         return Err(EncodeError::OutputTooSmall);
     }
 
-    let magic_number = match format {
-        FrameFormat::Zstd => ZSTD_MAGIC_NUMBER,
-        FrameFormat::Cosmoz => COSMOZ_MAGIC_NUMBER,
-    };
-    output[0..4].copy_from_slice(&magic_number.to_le_bytes());
+    output[0..4].copy_from_slice(&ZSTD_MAGIC_NUMBER.to_le_bytes());
 
     let checksum_bit: u8 = if with_checksum { 1 } else { 0 };
     output[4] = (content_size_flag << 6) | (checksum_bit << 2);
@@ -87,75 +77,13 @@ pub(crate) fn write_block_header(
     Ok(BLOCK_HEADER_LENGTH)
 }
 
-#[cfg(any(test, feature = "wasm-exports"))]
-pub(crate) fn write_chunk_index(output: &mut [u8], entries: &[ChunkEntry]) -> Result<usize, EncodeError> {
-    if entries.is_empty() {
-        return Err(EncodeError::BadOptions);
-    }
-
-    let chunk_count = entries.len();
-    if chunk_count > u32::MAX as usize {
-        return Err(EncodeError::InputTooLarge);
-    }
-
-    for entry in entries {
-        if entry.compressed_length > u32::MAX as usize
-            || entry.decompressed_length > u32::MAX as usize
-        {
-            return Err(EncodeError::InputTooLarge);
-        }
-    }
-
-    let entries_length = chunk_count
-        .checked_mul(CHUNK_ENTRY_LENGTH)
-        .ok_or(EncodeError::InputTooLarge)?;
-    let index_length = CHUNK_COUNT_LENGTH
-        .checked_add(entries_length)
-        .ok_or(EncodeError::InputTooLarge)?;
-
-    if output.len() < index_length {
+pub(crate) fn write_checksum(output: &mut [u8], hash: u64) -> Result<usize, EncodeError> {
+    if output.len() < ZSTD_CHECKSUM_LENGTH {
         return Err(EncodeError::OutputTooSmall);
     }
-
-    output[0..CHUNK_COUNT_LENGTH].copy_from_slice(&(chunk_count as u32).to_le_bytes());
-
-    let mut position = CHUNK_COUNT_LENGTH;
-    for entry in entries {
-        output[position..position + 4]
-            .copy_from_slice(&(entry.compressed_length as u32).to_le_bytes());
-        output[position + 4..position + 8]
-            .copy_from_slice(&(entry.decompressed_length as u32).to_le_bytes());
-        position += CHUNK_ENTRY_LENGTH;
-    }
-
-    Ok(index_length)
-}
-
-pub(crate) fn write_checksum(
-    output: &mut [u8],
-    format: FrameFormat,
-    hash: u64,
-) -> Result<usize, EncodeError> {
-    let checksum_length = match format {
-        FrameFormat::Zstd => ZSTD_CHECKSUM_LENGTH,
-        FrameFormat::Cosmoz => COSMOZ_CHECKSUM_LENGTH,
-    };
-
-    if output.len() < checksum_length {
-        return Err(EncodeError::OutputTooSmall);
-    }
-
-    match format {
-        FrameFormat::Zstd => {
-            let low_32_bits = (hash & 0xFFFF_FFFF) as u32;
-            output[0..ZSTD_CHECKSUM_LENGTH].copy_from_slice(&low_32_bits.to_le_bytes());
-        }
-        FrameFormat::Cosmoz => {
-            output[0..COSMOZ_CHECKSUM_LENGTH].copy_from_slice(&hash.to_le_bytes());
-        }
-    }
-
-    Ok(checksum_length)
+    let low_32_bits = (hash & 0xFFFF_FFFF) as u32;
+    output[0..ZSTD_CHECKSUM_LENGTH].copy_from_slice(&low_32_bits.to_le_bytes());
+    Ok(ZSTD_CHECKSUM_LENGTH)
 }
 
 fn get_content_size_flag(content_size: u64) -> u8 {
@@ -205,40 +133,30 @@ mod tests {
             u32::MAX as u64,
             u32::MAX as u64 + 1,
         ];
-        let formats = [FrameFormat::Zstd, FrameFormat::Cosmoz];
         let checksum_choices = [false, true];
         let window_log = 20u8;
         let mut max_written_length = 0usize;
 
         for &content_size in &sizes {
-            for &format in &formats {
-                for &with_checksum in &checksum_choices {
-                    let mut output = [0u8; MAX_FRAME_HEADER_LENGTH];
-                    let written = write_frame_header(
-                        &mut output,
-                        format,
-                        Some(content_size),
-                        window_log,
-                        with_checksum,
-                    )
-                    .unwrap();
-                    max_written_length = max_written_length.max(written);
+            for &with_checksum in &checksum_choices {
+                let mut output = [0u8; MAX_FRAME_HEADER_LENGTH];
+                let written =
+                    write_frame_header(&mut output, Some(content_size), window_log, with_checksum)
+                        .unwrap();
+                max_written_length = max_written_length.max(written);
 
-                    let header = read_frame_header(&output[..written]).unwrap();
-                    assert_eq!(header.format, format);
-                    assert_eq!(header.content_size, Some(content_size));
-                    assert_eq!(header.window_size, 1u64 << window_log);
-                    assert_eq!(header.has_checksum, with_checksum);
-                    assert_eq!(header.header_length, written);
-                }
+                let header = read_frame_header(&output[..written]).unwrap();
+                assert_eq!(header.content_size, Some(content_size));
+                assert_eq!(header.window_size, 1u64 << window_log);
+                assert_eq!(header.has_checksum, with_checksum);
+                assert_eq!(header.header_length, written);
             }
         }
 
         assert_eq!(max_written_length, MAX_FRAME_HEADER_LENGTH);
 
         let mut output = [0u8; MAX_FRAME_HEADER_LENGTH];
-        let written =
-            write_frame_header(&mut output, FrameFormat::Zstd, None, window_log, true).unwrap();
+        let written = write_frame_header(&mut output, None, window_log, true).unwrap();
         let header = read_frame_header(&output[..written]).unwrap();
         assert_eq!(header.content_size, None);
         assert_eq!(header.window_size, 1u64 << window_log);
@@ -249,23 +167,17 @@ mod tests {
     fn writers_reject_invalid_arguments() {
         let mut header_output = [0u8; MAX_FRAME_HEADER_LENGTH];
         assert_eq!(
-            write_frame_header(&mut header_output, FrameFormat::Zstd, Some(100), 9, true),
+            write_frame_header(&mut header_output, Some(100), 9, true),
             Err(EncodeError::BadOptions)
         );
         assert_eq!(
-            write_frame_header(&mut header_output, FrameFormat::Zstd, Some(100), 32, true),
+            write_frame_header(&mut header_output, Some(100), 32, true),
             Err(EncodeError::BadOptions)
         );
 
         let mut short_header_output = [0u8; 9];
         assert_eq!(
-            write_frame_header(
-                &mut short_header_output,
-                FrameFormat::Zstd,
-                Some(100),
-                20,
-                true
-            ),
+            write_frame_header(&mut short_header_output, Some(100), 20, true),
             Err(EncodeError::OutputTooSmall)
         );
 
@@ -281,31 +193,9 @@ mod tests {
             Err(EncodeError::OutputTooSmall)
         );
 
-        let mut index_output = [0u8; 16];
-        assert_eq!(
-            write_chunk_index(&mut index_output, &[]),
-            Err(EncodeError::BadOptions)
-        );
-
-        let entries = [ChunkEntry {
-            compressed_length: 5,
-            decompressed_length: 5,
-        }];
-        let mut short_index_output = [0u8; 3];
-        assert_eq!(
-            write_chunk_index(&mut short_index_output, &entries),
-            Err(EncodeError::OutputTooSmall)
-        );
-
         let mut short_zstd_checksum_output = [0u8; 3];
         assert_eq!(
-            write_checksum(&mut short_zstd_checksum_output, FrameFormat::Zstd, 1),
-            Err(EncodeError::OutputTooSmall)
-        );
-
-        let mut short_cosmoz_checksum_output = [0u8; 7];
-        assert_eq!(
-            write_checksum(&mut short_cosmoz_checksum_output, FrameFormat::Cosmoz, 1),
+            write_checksum(&mut short_zstd_checksum_output, 1),
             Err(EncodeError::OutputTooSmall)
         );
     }

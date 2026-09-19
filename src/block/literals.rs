@@ -1,12 +1,12 @@
 use crate::{
     entropy::{
         fse_decode_table::FseDecodeTable,
-        huffman_decode::{decode_many_streams_with_slack, decode_one_stream, split_streams},
+        huffman_decode::{decode_four_streams_with_slack, decode_one_stream, split_four_streams},
         huffman_decode_fast::decode_two_sections_unchecked,
         huffman_decode_table::{HuffmanDecodeTable, read_huffman_table},
     },
     error::DecodeError,
-    frame::{block_header::MAX_BLOCK_SIZE, frame_header::FrameFormat},
+    frame::block_header::MAX_BLOCK_SIZE,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -112,7 +112,6 @@ pub(crate) fn read_literals_header(input: &[u8]) -> Result<LiteralsHeader, Decod
 
 pub(crate) fn decode_literals<'input, 'workspace>(
     input: &'input [u8],
-    format: FrameFormat,
     huffman_table: &mut HuffmanDecodeTable,
     weight_fse_table: &mut FseDecodeTable,
     workspace: &'workspace mut [u8],
@@ -124,7 +123,7 @@ pub(crate) fn decode_literals<'input, 'workspace>(
     if header.regenerated_size > workspace.len() {
         return Err(DecodeError::OutputTooSmall);
     }
-    let stream_count = resolve_stream_count(format, header.stream_count);
+    let stream_count = header.stream_count as usize;
 
     match header.literals_type {
         LiteralsType::Raw => {
@@ -270,39 +269,19 @@ pub unsafe fn decode_literal_sections_pair_unchecked(
         weight_fse_table,
     )?;
     let (first_slices, first_segments) =
-        split_streams(first_streams, 4, first_header.regenerated_size)?;
+        split_four_streams(first_streams, first_header.regenerated_size)?;
     let (second_slices, second_segments) =
-        split_streams(second_streams, 4, second_header.regenerated_size)?;
+        split_four_streams(second_streams, second_header.regenerated_size)?;
     unsafe {
         decode_two_sections_unchecked(
-            [
-                first_slices[0],
-                first_slices[1],
-                first_slices[2],
-                first_slices[3],
-            ],
+            first_slices,
             &huffman_tables[first_table],
             first_output.as_mut_ptr(),
-            [
-                first_segments[0],
-                first_segments[1],
-                first_segments[2],
-                first_segments[3],
-            ],
-            [
-                second_slices[0],
-                second_slices[1],
-                second_slices[2],
-                second_slices[3],
-            ],
+            first_segments,
+            second_slices,
             &huffman_tables[second_table],
             second_output,
-            [
-                second_segments[0],
-                second_segments[1],
-                second_segments[2],
-                second_segments[3],
-            ],
+            second_segments,
         )?;
     }
     *current_table = second_table;
@@ -312,17 +291,6 @@ pub unsafe fn decode_literal_sections_pair_unchecked(
         second_count: second_header.regenerated_size,
         second_bytes_used: second_header.header_length + second_header.compressed_size,
     }))
-}
-
-fn resolve_stream_count(format: FrameFormat, header_stream_count: u8) -> usize {
-    if header_stream_count == 1 {
-        1
-    } else {
-        match format {
-            FrameFormat::Zstd => 4,
-            FrameFormat::Cosmoz => 8,
-        }
-    }
 }
 
 fn decode_streams(
@@ -338,7 +306,7 @@ fn decode_streams(
             .ok_or(DecodeError::OutputTooSmall)?;
         decode_one_stream(input, huffman_table, output_slice)
     } else {
-        decode_many_streams_with_slack(input, huffman_table, stream_count, output, regenerated_size)
+        decode_four_streams_with_slack(input, huffman_table, output, regenerated_size)
     }
 }
 
@@ -402,7 +370,6 @@ mod tests {
 
         let (source, bytes_consumed) = decode_literals(
             &input,
-            FrameFormat::Zstd,
             &mut huffman_table,
             &mut weight_fse_table,
             &mut workspace,
@@ -430,7 +397,6 @@ mod tests {
 
         let (source, bytes_consumed) = decode_literals(
             &input,
-            FrameFormat::Zstd,
             &mut huffman_table,
             &mut weight_fse_table,
             &mut workspace,
@@ -458,7 +424,6 @@ mod tests {
 
         let result = decode_literals(
             &input,
-            FrameFormat::Zstd,
             &mut huffman_table,
             &mut weight_fse_table,
             &mut output,
@@ -512,7 +477,6 @@ mod tests {
 
         let (source, bytes_consumed) = decode_literals(
             &LITERALS_SECTION,
-            FrameFormat::Zstd,
             &mut huffman_table,
             &mut weight_fse_table,
             &mut workspace,

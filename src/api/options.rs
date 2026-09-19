@@ -3,17 +3,9 @@ pub const DEFAULT_LEVEL: u8 = crate::encoder::DEFAULT_COMPRESSION_LEVEL;
 
 #[cfg(feature = "compression")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Format {
-    Zstd,
-    Parallel { chunk_size: usize },
-}
-
-#[cfg(feature = "compression")]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CompressOptions {
     pub level: u8,
     pub checksum: bool,
-    pub format: Format,
 }
 
 #[cfg(feature = "compression")]
@@ -22,7 +14,6 @@ impl Default for CompressOptions {
         Self {
             level: DEFAULT_LEVEL,
             checksum: true,
-            format: Format::Zstd,
         }
     }
 }
@@ -31,10 +22,6 @@ impl Default for CompressOptions {
 impl CompressOptions {
     pub(crate) fn to_internal(self) -> crate::encoder::CompressOptions {
         crate::encoder::CompressOptions {
-            format: match self.format {
-                Format::Zstd => crate::encoder::CompressFormat::Zstd,
-                Format::Parallel { chunk_size } => crate::encoder::CompressFormat::Cosmoz { chunk_size },
-            },
             with_checksum: self.checksum,
             level: self.level,
         }

@@ -10,10 +10,7 @@ use crate::{
     },
     entropy::{fse_decode_table::FseDecodeTable, huffman_decode_table::HuffmanDecodeTable},
     error::DecodeError,
-    frame::{
-        block_header::{BlockHeader, BlockType, MAX_BLOCK_SIZE},
-        frame_header::FrameFormat,
-    },
+    frame::block_header::{BlockHeader, BlockType, MAX_BLOCK_SIZE},
     simd::copy_bytes::{copy_bytes, copy_match_overshoot_unchecked},
 };
 
@@ -41,7 +38,6 @@ pub(crate) struct BlockWorkspace {
     pub sequence_tables: SequenceTables,
     pub fast_sequence_tables: FastSequenceTables,
     pub repeat_offsets: RepeatOffsets,
-    pub frame_format: FrameFormat,
 }
 
 impl BlockWorkspace {
@@ -58,12 +54,10 @@ impl BlockWorkspace {
                 second: 4,
                 third: 8,
             },
-            frame_format: FrameFormat::Zstd,
         }
     }
 
-    pub(crate) fn reset_history(&mut self, format: FrameFormat) {
-        self.frame_format = format;
+    pub(crate) fn reset_history(&mut self) {
         self.huffman_tables[0].is_ready = false;
         self.huffman_tables[1].is_ready = false;
         self.current_huffman_table = 0;
@@ -137,7 +131,6 @@ fn decode_compressed_block(
 ) -> Result<usize, DecodeError> {
     let (literal_source, literals_bytes_used) = decode_literals(
         input,
-        workspace.frame_format,
         &mut workspace.huffman_tables[workspace.current_huffman_table & 1],
         &mut workspace.weight_fse_table,
         &mut workspace.literals,
@@ -146,7 +139,6 @@ fn decode_compressed_block(
         sequence_tables: &mut workspace.sequence_tables,
         fast_sequence_tables: &mut workspace.fast_sequence_tables,
         repeat_offsets: &mut workspace.repeat_offsets,
-        frame_format: workspace.frame_format,
     };
     decode_sequences_section(
         input,
@@ -168,9 +160,7 @@ pub(crate) fn decode_compressed_block_pair(
     output_position: usize,
     workspace: &mut BlockWorkspace,
 ) -> Result<Option<usize>, DecodeError> {
-    if workspace.frame_format != FrameFormat::Zstd
-        || output.len() < output_position + PAIRED_OUTPUT_ROOM
-    {
+    if output.len() < output_position + PAIRED_OUTPUT_ROOM {
         return Ok(None);
     }
     let second_literals_position = output_position + PAIRED_LITERALS_DISTANCE;
@@ -193,7 +183,6 @@ pub(crate) fn decode_compressed_block_pair(
         sequence_tables: &mut workspace.sequence_tables,
         fast_sequence_tables: &mut workspace.fast_sequence_tables,
         repeat_offsets: &mut workspace.repeat_offsets,
-        frame_format: workspace.frame_format,
     };
     let middle_position = decode_sequences_section(
         first_input,
@@ -222,7 +211,6 @@ struct SequenceState<'workspace> {
     sequence_tables: &'workspace mut SequenceTables,
     fast_sequence_tables: &'workspace mut FastSequenceTables,
     repeat_offsets: &'workspace mut RepeatOffsets,
-    frame_format: FrameFormat,
 }
 
 fn decode_sequences_section(
@@ -292,7 +280,6 @@ fn decode_sequences_section(
                     literal_count,
                     output,
                     output_position,
-                    state.frame_format,
                     state.repeat_offsets,
                 )
             };
@@ -303,7 +290,6 @@ fn decode_sequences_section(
         bitstream,
         state.sequence_tables,
         sequences_header.sequence_count,
-        state.frame_format,
     )?;
 
     while let Some(sequence) = decoder.next_sequence(state.repeat_offsets) {
@@ -815,27 +801,26 @@ The quick brown fox jumps over the lazy dog. "
 
         let mut encode_workspace = EncodeWorkspace::new_boxed();
         let mut decode_workspace = DecodeWorkspace::new_boxed();
-        for options in [CompressOptions::zstd(), CompressOptions::cosmoz()] {
-            for length in (1..400usize).chain([4096, 70_000, 200_000]) {
-                let mut input = xorshift_bytes(length, length as u32);
-                for index in 0..length {
-                    if index % 7 != 0 && index >= 1 + length % 5 {
-                        input[index] = input[index - 1 - length % 5];
-                    }
+        let options = CompressOptions::zstd();
+        for length in (1..400usize).chain([4096, 70_000, 200_000]) {
+            let mut input = xorshift_bytes(length, length as u32);
+            for index in 0..length {
+                if index % 7 != 0 && index >= 1 + length % 5 {
+                    input[index] = input[index - 1 - length % 5];
                 }
-                let mut compressed = std::vec![0u8; get_max_compressed_size(length, &options)];
-                let compressed_length =
-                    compress(&input, &mut compressed, &options, &mut encode_workspace).unwrap();
-                let mut decoded = std::vec![0u8; length];
-                let decoded_length = decompress(
-                    &compressed[..compressed_length],
-                    &mut decoded,
-                    &mut decode_workspace,
-                )
-                .unwrap();
-                assert_eq!(decoded_length, length);
-                assert_eq!(decoded, input, "length {length}");
             }
+            let mut compressed = std::vec![0u8; get_max_compressed_size(length, &options)];
+            let compressed_length =
+                compress(&input, &mut compressed, &options, &mut encode_workspace).unwrap();
+            let mut decoded = std::vec![0u8; length];
+            let decoded_length = decompress(
+                &compressed[..compressed_length],
+                &mut decoded,
+                &mut decode_workspace,
+            )
+            .unwrap();
+            assert_eq!(decoded_length, length);
+            assert_eq!(decoded, input, "length {length}");
         }
     }
 

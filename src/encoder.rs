@@ -1,6 +1,4 @@
 use crate::block::sequences::TableMode;
-#[cfg(feature = "parallel")]
-use crate::frame::chunk_index::ChunkEntry;
 use crate::{
     block::{
         block_writer::write_block,
@@ -12,40 +10,19 @@ use crate::{
     entropy::{fse_encode_table::FseEncodeTable, huffman_encode_table::HuffmanEncodeTable},
     frame::{
         block_header::{BLOCK_HEADER_LENGTH, MAX_BLOCK_SIZE},
-        chunk_index::{CHUNK_COUNT_LENGTH, CHUNK_ENTRY_LENGTH},
-        frame_header::{COSMOZ_CHECKSUM_LENGTH, FrameFormat, ZSTD_CHECKSUM_LENGTH},
+        frame_header::ZSTD_CHECKSUM_LENGTH,
         frame_writer::{MAX_FRAME_HEADER_LENGTH, write_frame_header},
     },
     levels::{
-        AnyFinder, MAX_OFFSET_LOG, MatchFinder,
+        AnyFinder, MatchFinder,
         level_table::{self, LevelParameters},
     },
 };
 #[cfg(feature = "checksum")]
-use crate::{
-    frame::frame_writer::write_checksum,
-    hash::{xxhash3, xxhash64},
-};
-
-pub(crate) const MAX_CHUNK_SIZE: usize = 4 * 1024 * 1024;
-pub(crate) const DEFAULT_CHUNK_SIZE: usize = MAX_CHUNK_SIZE;
-
-fn window_log_for_frame(format: FrameFormat, level_parameters: LevelParameters) -> u8 {
-    match format {
-        FrameFormat::Zstd => level_parameters.window_log,
-        FrameFormat::Cosmoz => level_parameters.window_log.min(MAX_OFFSET_LOG),
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CompressFormat {
-    Zstd,
-    Cosmoz { chunk_size: usize },
-}
+use crate::{frame::frame_writer::write_checksum, hash::xxhash64};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct CompressOptions {
-    pub format: CompressFormat,
     pub with_checksum: bool,
     pub level: u8,
 }
@@ -53,18 +30,6 @@ pub(crate) struct CompressOptions {
 impl CompressOptions {
     pub(crate) const fn zstd() -> Self {
         Self {
-            format: CompressFormat::Zstd,
-            with_checksum: true,
-            level: 1,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) const fn cosmoz() -> Self {
-        Self {
-            format: CompressFormat::Cosmoz {
-                chunk_size: DEFAULT_CHUNK_SIZE,
-            },
             with_checksum: true,
             level: 1,
         }
@@ -91,7 +56,6 @@ pub(crate) struct EncodeWorkspace {
     pub(crate) sequences: [SequenceRecord; MAX_SEQUENCES_PER_BLOCK],
     pub(crate) literals: [u8; MAX_BLOCK_SIZE],
     pub(crate) block_scratch: [u8; MAX_BLOCK_SIZE + 1024],
-    pub(crate) entropy_scratch: [u8; MAX_BLOCK_SIZE + 1024],
     pub(crate) huffman_table: HuffmanEncodeTable,
     pub(crate) weight_fse_table: FseEncodeTable,
     pub(crate) sequence_tables: SequenceEncodeTables,
@@ -117,7 +81,6 @@ impl EncodeWorkspace {
             }; MAX_SEQUENCES_PER_BLOCK],
             literals: [0u8; MAX_BLOCK_SIZE],
             block_scratch: [0u8; MAX_BLOCK_SIZE + 1024],
-            entropy_scratch: [0u8; MAX_BLOCK_SIZE + 1024],
             huffman_table: HuffmanEncodeTable::new(),
             weight_fse_table: FseEncodeTable::new(),
             sequence_tables: SequenceEncodeTables::new(),
@@ -343,68 +306,19 @@ mod new_boxed_tests {
     }
 }
 
-fn clamp_chunk_size(chunk_size: usize) -> usize {
-    if chunk_size == 0 {
-        return DEFAULT_CHUNK_SIZE;
-    }
-    chunk_size.min(MAX_CHUNK_SIZE)
-}
-
-fn window_size_for_log(window_log: u8) -> usize {
-    if window_log as u32 >= usize::BITS {
-        usize::MAX
-    } else {
-        1usize << window_log
-    }
-}
-
-fn plan_cosmoz_chunking(input_length: usize, chunk_size: usize, window_log: u8) -> (usize, usize) {
-    let configured_chunk_size = clamp_chunk_size(chunk_size);
-    if input_length == 0 {
-        return (configured_chunk_size, 1);
-    }
-    let split_chunk_count = input_length.div_ceil(configured_chunk_size);
-    let fits_in_one_window = input_length <= window_size_for_log(window_log);
-    if split_chunk_count <= 2 && fits_in_one_window {
-        (input_length, 1)
-    } else {
-        (configured_chunk_size, split_chunk_count)
-    }
-}
-
 pub(crate) fn get_max_compressed_size(input_length: usize, options: &CompressOptions) -> usize {
     let checksum_size = if options.with_checksum {
-        match options.format {
-            CompressFormat::Zstd => ZSTD_CHECKSUM_LENGTH,
-            CompressFormat::Cosmoz { .. } => COSMOZ_CHECKSUM_LENGTH,
-        }
+        ZSTD_CHECKSUM_LENGTH
     } else {
         0
     };
-
-    match options.format {
-        CompressFormat::Zstd => {
-            let block_count = if input_length == 0 {
-                1
-            } else {
-                input_length.div_ceil(MAX_BLOCK_SIZE)
-            };
-            let blocks_size = input_length + block_count * BLOCK_HEADER_LENGTH;
-            MAX_FRAME_HEADER_LENGTH + blocks_size + checksum_size
-        }
-        CompressFormat::Cosmoz { chunk_size } => {
-            let chunk_size = clamp_chunk_size(chunk_size);
-            let chunk_count = if input_length == 0 {
-                1
-            } else {
-                input_length.div_ceil(chunk_size)
-            };
-            let block_count = chunk_count + input_length.div_ceil(MAX_BLOCK_SIZE);
-            let blocks_size = input_length + block_count * BLOCK_HEADER_LENGTH;
-            let index_size = CHUNK_COUNT_LENGTH + chunk_count * CHUNK_ENTRY_LENGTH;
-            MAX_FRAME_HEADER_LENGTH + index_size + blocks_size + checksum_size
-        }
-    }
+    let block_count = if input_length == 0 {
+        1
+    } else {
+        input_length.div_ceil(MAX_BLOCK_SIZE)
+    };
+    let blocks_size = input_length + block_count * BLOCK_HEADER_LENGTH;
+    MAX_FRAME_HEADER_LENGTH + blocks_size + checksum_size
 }
 
 pub(crate) fn compress(
@@ -424,42 +338,26 @@ pub(crate) fn compress(
         return Err(EncodeError::BadOptions);
     }
 
-    match options.format {
-        CompressFormat::Zstd => compress_zstd_frame(input, output, options, workspace),
-        CompressFormat::Cosmoz { chunk_size } => {
-            compress_cosmoz_frame(input, output, options, chunk_size, workspace)
-        }
-    }
-}
-
-fn compress_zstd_frame(
-    input: &[u8],
-    output: &mut [u8],
-    options: &CompressOptions,
-    workspace: &mut EncodeWorkspace,
-) -> Result<usize, EncodeError> {
     let frame_parameters = crate::levels::finder_tables::get_table_parameters_for_input(
         workspace.level,
         workspace.level_parameters,
         input.len(),
     );
-    let window_log = window_log_for_frame(FrameFormat::Zstd, frame_parameters);
     let mut position = write_frame_header(
         output,
-        FrameFormat::Zstd,
         Some(input.len() as u64),
-        window_log,
+        frame_parameters.window_log,
         options.with_checksum,
     )?;
 
-        workspace.prepare_tables_for_input(input.len())?;
+    workspace.prepare_tables_for_input(input.len())?;
     workspace.match_finder.reset(input.len());
     workspace.repeat_offsets = RepeatOffsets::new();
 
     let blocks_output = output
         .get_mut(position..)
         .ok_or(EncodeError::OutputTooSmall)?;
-    position += compress_chunk(input, FrameFormat::Zstd, blocks_output, workspace)?;
+    position += compress_blocks(input, blocks_output, workspace)?;
 
     #[cfg(feature = "checksum")]
     if options.with_checksum {
@@ -467,144 +365,19 @@ fn compress_zstd_frame(
         let checksum_output = output
             .get_mut(position..)
             .ok_or(EncodeError::OutputTooSmall)?;
-        position += write_checksum(checksum_output, FrameFormat::Zstd, hash)?;
+        position += write_checksum(checksum_output, hash)?;
     }
 
     Ok(position)
 }
 
-fn compress_cosmoz_frame(
+fn compress_blocks(
     input: &[u8],
-    output: &mut [u8],
-    options: &CompressOptions,
-    chunk_size: usize,
-    workspace: &mut EncodeWorkspace,
-) -> Result<usize, EncodeError> {
-    let window_log = window_log_for_frame(FrameFormat::Cosmoz, workspace.level_parameters);
-    let (chunk_size, chunk_count) =
-        plan_cosmoz_chunking(input.len(), chunk_size, window_log);
-
-    let header_length = write_frame_header(
-        output,
-        FrameFormat::Cosmoz,
-        Some(input.len() as u64),
-        window_log,
-        options.with_checksum,
-    )?;
-
-    let entries_length = chunk_count
-        .checked_mul(CHUNK_ENTRY_LENGTH)
-        .ok_or(EncodeError::InputTooLarge)?;
-    let index_length = CHUNK_COUNT_LENGTH
-        .checked_add(entries_length)
-        .ok_or(EncodeError::InputTooLarge)?;
-
-    if output.len() < header_length + index_length {
-        return Err(EncodeError::OutputTooSmall);
-    }
-    output[header_length..header_length + CHUNK_COUNT_LENGTH]
-        .copy_from_slice(&(chunk_count as u32).to_le_bytes());
-
-    let mut position = header_length + index_length;
-
-    #[cfg(feature = "parallel")]
-    let use_parallel_path = chunk_count >= 2;
-    #[cfg(not(feature = "parallel"))]
-    let use_parallel_path = false;
-
-    if use_parallel_path {
-        #[cfg(feature = "parallel")]
-        {
-            let mut entries = vec![
-                ChunkEntry {
-                    compressed_length: 0,
-                    decompressed_length: 0,
-                };
-                chunk_count
-            ];
-            let chunks_output = output
-                .get_mut(position..)
-                .ok_or(EncodeError::OutputTooSmall)?;
-            let written = crate::parallel_encoder::compress_chunks_in_parallel(
-                input,
-                chunk_size,
-                workspace.level,
-                chunks_output,
-                &mut entries,
-            )?;
-
-            for (chunk_number, entry) in entries.iter().enumerate() {
-                let compressed_length_u32 = u32::try_from(entry.compressed_length)
-                    .map_err(|_| EncodeError::InputTooLarge)?;
-                let decompressed_length_u32 = u32::try_from(entry.decompressed_length)
-                    .map_err(|_| EncodeError::InputTooLarge)?;
-                let entry_offset =
-                    header_length + CHUNK_COUNT_LENGTH + chunk_number * CHUNK_ENTRY_LENGTH;
-                output[entry_offset..entry_offset + 4]
-                    .copy_from_slice(&compressed_length_u32.to_le_bytes());
-                output[entry_offset + 4..entry_offset + 8]
-                    .copy_from_slice(&decompressed_length_u32.to_le_bytes());
-            }
-
-            position += written;
-        }
-    } else {
-        workspace.prepare_tables_for_input(chunk_size.min(input.len()))?;
-        let mut chunk_start = 0usize;
-        for chunk_number in 0..chunk_count {
-            let chunk_end = if input.is_empty() {
-                0
-            } else {
-                (chunk_start + chunk_size).min(input.len())
-            };
-            let chunk_content = &input[chunk_start..chunk_end];
-
-            workspace.match_finder.reset(chunk_content.len());
-            workspace.repeat_offsets = RepeatOffsets::new();
-
-            let chunk_output = output
-                .get_mut(position..)
-                .ok_or(EncodeError::OutputTooSmall)?;
-            let compressed_length =
-                compress_chunk(chunk_content, FrameFormat::Cosmoz, chunk_output, workspace)?;
-
-            let compressed_length_u32 =
-                u32::try_from(compressed_length).map_err(|_| EncodeError::InputTooLarge)?;
-            let decompressed_length_u32 =
-                u32::try_from(chunk_content.len()).map_err(|_| EncodeError::InputTooLarge)?;
-
-            let entry_offset =
-                header_length + CHUNK_COUNT_LENGTH + chunk_number * CHUNK_ENTRY_LENGTH;
-            output[entry_offset..entry_offset + 4]
-                .copy_from_slice(&compressed_length_u32.to_le_bytes());
-            output[entry_offset + 4..entry_offset + 8]
-                .copy_from_slice(&decompressed_length_u32.to_le_bytes());
-
-            position += compressed_length;
-            chunk_start = chunk_end;
-        }
-    }
-
-    #[cfg(feature = "checksum")]
-    if options.with_checksum {
-        let hash = xxhash3::hash_bytes(input);
-        let checksum_output = output
-            .get_mut(position..)
-            .ok_or(EncodeError::OutputTooSmall)?;
-        position += write_checksum(checksum_output, FrameFormat::Cosmoz, hash)?;
-    }
-
-    Ok(position)
-}
-
-pub(crate) fn compress_chunk(
-    input: &[u8],
-    format: FrameFormat,
     output: &mut [u8],
     workspace: &mut EncodeWorkspace,
 ) -> Result<usize, EncodeError> {
     if input.is_empty() {
-        return write_block(input, 0, format, true, output, workspace);
+        return write_block(input, 0, true, output, workspace);
     }
 
     let mut position = 0usize;
@@ -621,7 +394,6 @@ pub(crate) fn compress_chunk(
         let written = write_block(
             &input[..block_end],
             block_start,
-            format,
             is_last,
             block_output,
             workspace,
@@ -740,35 +512,7 @@ mod tests {
     }
 
     #[test]
-    fn raw_cosmoz_frame_round_trips() {
-        let text = build_deterministic_text(2 * 1024 * 1024 + 512 * 1024);
-        let chunk_size = 1024 * 1024;
-        let options = CompressOptions {
-            format: CompressFormat::Cosmoz { chunk_size },
-            ..CompressOptions::cosmoz()
-        };
-        let chunk_count = text.len().div_ceil(chunk_size);
-        assert_eq!(chunk_count, 3);
-
-        let mut workspace = EncodeWorkspace::new_boxed();
-        let mut output = vec![0u8; get_max_compressed_size(text.len(), &options)];
-        let written = compress(&text, &mut output, &options, &mut workspace).unwrap();
-        output.truncate(written);
-
-        assert_eq!(
-            get_decompressed_size(&output).unwrap(),
-            Some(text.len() as u64)
-        );
-
-        let mut decode_workspace = DecodeWorkspace::new_boxed();
-        let mut decoded = vec![0u8; text.len()];
-        let decoded_length = decompress(&output, &mut decoded, &mut decode_workspace).unwrap();
-        assert_eq!(decoded_length, text.len());
-        assert_eq!(decoded, text);
-    }
-
-    #[test]
-    fn empty_input_frames_round_trip_in_both_formats() {
+    fn empty_input_frame_round_trips() {
         let zstd_options = CompressOptions::zstd();
         let mut workspace = EncodeWorkspace::new_boxed();
         let mut zstd_output = vec![0u8; get_max_compressed_size(0, &zstd_options)];
@@ -787,16 +531,6 @@ mod tests {
         } else {
             println!("zstd CLI not found on PATH, skipping CLI check");
         }
-
-        let cosmoz_options = CompressOptions::cosmoz();
-        let mut cosmoz_output = vec![0u8; get_max_compressed_size(0, &cosmoz_options)];
-        let cosmoz_written =
-            compress(&[], &mut cosmoz_output, &cosmoz_options, &mut workspace).unwrap();
-        cosmoz_output.truncate(cosmoz_written);
-
-        let cosmoz_decoded_length =
-            decompress(&cosmoz_output, &mut decoded, &mut decode_workspace).unwrap();
-        assert_eq!(cosmoz_decoded_length, 0);
     }
 
     #[test]
@@ -861,7 +595,6 @@ mod tests {
             with_checksum: false,
             ..Default::default()
         };
-        assert_eq!(options.format, CompressFormat::Zstd);
         assert_eq!(options.level, 12);
 
         let text = build_deterministic_text(200 * 1024);
@@ -869,7 +602,6 @@ mod tests {
         let mut output = vec![0u8; get_max_compressed_size(text.len(), &options)];
         let written = compress(&text, &mut output, &options, &mut workspace).unwrap();
         let header = crate::frame::frame_header::read_frame_header(&output[..written]).unwrap();
-        assert_eq!(header.format, FrameFormat::Zstd);
         assert!(!header.has_checksum);
 
         let mut decode_workspace = DecodeWorkspace::new_boxed();
@@ -925,7 +657,6 @@ mod tests {
         let second_text = build_deterministic_text(40 * 1024);
         for level in [1u8, 9] {
             let options = CompressOptions {
-                format: CompressFormat::Zstd,
                 with_checksum: false,
                 level,
             };
@@ -943,7 +674,6 @@ mod tests {
     #[test]
     fn level_nine_zstd_frame_header_window_log_is_twenty_two() {
         let options = CompressOptions {
-            format: CompressFormat::Zstd,
             with_checksum: true,
             level: 9,
         };
@@ -967,7 +697,6 @@ mod tests {
     #[test]
     fn level_nine_zstd_frame_round_trips_through_our_decoder_and_the_cli() {
         let options = CompressOptions {
-            format: CompressFormat::Zstd,
             with_checksum: true,
             level: 9,
         };
@@ -1004,198 +733,18 @@ mod tests {
     }
 
     #[test]
-    fn max_compressed_size_bound_is_exact_for_worst_case_chunking() {
+    fn max_compressed_size_bound_holds_for_incompressible_input() {
         let lengths = [0usize, 1, 65535, 65536, 65537, 214289, 400000];
-        let chunk_sizes = [1024usize, 65536, MAX_CHUNK_SIZE];
+        let options = CompressOptions::zstd();
         let mut workspace = EncodeWorkspace::new_boxed();
 
         for &length in &lengths {
             let input = generate_incompressible_bytes(length, length as u64 + 1);
-            for &chunk_size in &chunk_sizes {
-                let options = CompressOptions {
-                    format: CompressFormat::Cosmoz { chunk_size },
-                    ..CompressOptions::cosmoz()
-                };
-                let max_length = get_max_compressed_size(input.len(), &options);
-                let mut output = vec![0u8; max_length];
-                let result = compress(&input, &mut output, &options, &mut workspace);
-                assert!(
-                    result.is_ok(),
-                    "length {length} chunk_size {chunk_size} failed: {result:?}"
-                );
-            }
+            let max_length = get_max_compressed_size(input.len(), &options);
+            let mut output = vec![0u8; max_length];
+            let result = compress(&input, &mut output, &options, &mut workspace);
+            assert!(result.is_ok(), "length {length} failed: {result:?}");
         }
-    }
-
-    fn read_chunk_count(frame: &[u8]) -> usize {
-        let header = crate::frame::frame_header::read_frame_header(frame).unwrap();
-        let index =
-            crate::frame::chunk_index::ChunkIndex::read(&frame[header.header_length..]).unwrap();
-        index.chunk_count
-    }
-
-    #[test]
-    fn merges_two_chunks_into_one_when_the_merged_chunk_fits_the_window() {
-        let text = build_deterministic_text(6000);
-        let chunk_size = 4096;
-        let options = CompressOptions {
-            format: CompressFormat::Cosmoz { chunk_size },
-            ..CompressOptions::cosmoz()
-        };
-        let split_chunk_count = text.len().div_ceil(chunk_size);
-        assert_eq!(split_chunk_count, 2);
-
-        let mut workspace = EncodeWorkspace::new_boxed();
-        let mut output = vec![0u8; get_max_compressed_size(text.len(), &options)];
-        let written = compress(&text, &mut output, &options, &mut workspace).unwrap();
-        output.truncate(written);
-
-        assert_eq!(read_chunk_count(&output), 1);
-
-        let mut decode_workspace = DecodeWorkspace::new_boxed();
-        let mut decoded = vec![0u8; text.len()];
-        let decoded_length = decompress(&output, &mut decoded, &mut decode_workspace).unwrap();
-        assert_eq!(decoded_length, text.len());
-        assert_eq!(decoded, text);
-    }
-
-    #[test]
-    fn keeps_the_split_when_the_merged_chunk_would_need_a_larger_window() {
-        let text = build_deterministic_text(1_400_000);
-        let chunk_size = 700_000;
-        let mut options = CompressOptions {
-            format: CompressFormat::Cosmoz { chunk_size },
-            ..CompressOptions::cosmoz()
-        };
-        options.level = 1;
-        let split_chunk_count = text.len().div_ceil(chunk_size);
-        assert_eq!(split_chunk_count, 2);
-        assert!(text.len() > (1usize << level_table::level_one_parameters().window_log));
-
-        let mut workspace = EncodeWorkspace::new_boxed_for_level(1).unwrap();
-        let mut output = vec![0u8; get_max_compressed_size(text.len(), &options)];
-        let written = compress(&text, &mut output, &options, &mut workspace).unwrap();
-        output.truncate(written);
-
-        assert_eq!(read_chunk_count(&output), 2);
-
-        let mut decode_workspace = DecodeWorkspace::new_boxed();
-        let mut decoded = vec![0u8; text.len()];
-        let decoded_length = decompress(&output, &mut decoded, &mut decode_workspace).unwrap();
-        assert_eq!(decoded_length, text.len());
-        assert_eq!(decoded, text);
-    }
-
-    #[test]
-    fn single_chunk_cosmoz_frame_round_trips_through_the_parallel_decoder() {
-        let text = build_deterministic_text(6000);
-        let chunk_size = 4096;
-        let options = CompressOptions {
-            format: CompressFormat::Cosmoz { chunk_size },
-            ..CompressOptions::cosmoz()
-        };
-
-        let mut workspace = EncodeWorkspace::new_boxed();
-        let mut output = vec![0u8; get_max_compressed_size(text.len(), &options)];
-        let written = compress(&text, &mut output, &options, &mut workspace).unwrap();
-        output.truncate(written);
-
-        assert_eq!(read_chunk_count(&output), 1);
-
-        let mut decode_workspace = DecodeWorkspace::new_boxed();
-        let mut decoded = vec![0u8; text.len()];
-        let decoded_length = decompress(&output, &mut decoded, &mut decode_workspace).unwrap();
-        assert_eq!(decoded_length, text.len());
-        assert_eq!(decoded, text);
-    }
-
-    #[test]
-    #[ignore]
-    fn report_cosmoz_and_zstd_sizes_on_bench_files() {
-        let pwiz = std::fs::read(
-            "/Users/josorio/github/phenological/ionic/crates/parser/data/mzml/small.pwiz.1.1.mzML",
-        )
-        .unwrap();
-        let iron = std::fs::read(
-            "/Users/josorio/github/josoriom/szstd/data/iron_ultrairon_SER_MS-AI-HILPOS@fNMR_IROr20_IROp011_LTR_16.mzML",
-        )
-        .unwrap();
-
-        for level in level_table::SUPPORTED_LEVELS {
-            for (name, input) in [("pwiz", &pwiz), ("iron", &iron)] {
-                let mut cosmoz_options = CompressOptions::cosmoz();
-                cosmoz_options.level = level;
-                let mut zstd_options = CompressOptions::zstd();
-                zstd_options.level = level;
-
-                let mut workspace = EncodeWorkspace::new_boxed_for_level(level).unwrap();
-
-                let mut cosmoz_output =
-                    vec![0u8; get_max_compressed_size(input.len(), &cosmoz_options)];
-                let cosmoz_written =
-                    compress(input, &mut cosmoz_output, &cosmoz_options, &mut workspace).unwrap();
-                let cosmoz_chunk_count = read_chunk_count(&cosmoz_output[..cosmoz_written]);
-
-                let mut zstd_output =
-                    vec![0u8; get_max_compressed_size(input.len(), &zstd_options)];
-                let zstd_written =
-                    compress(input, &mut zstd_output, &zstd_options, &mut workspace).unwrap();
-
-                println!(
-                    "{name} level {level}: cosmoz {cosmoz_written} bytes (chunk_count {cosmoz_chunk_count}), zstd {zstd_written} bytes"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn empty_input_cosmoz_chunk_count_is_still_one() {
-        let options = CompressOptions::cosmoz();
-        let mut workspace = EncodeWorkspace::new_boxed();
-        let mut output = vec![0u8; get_max_compressed_size(0, &options)];
-        let written = compress(&[], &mut output, &options, &mut workspace).unwrap();
-        output.truncate(written);
-
-        assert_eq!(read_chunk_count(&output), 1);
-    }
-
-    #[test]
-    fn cosmoz_uses_eight_streams_and_two_sequence_streams() {
-        let text = build_deterministic_text(300 * 1024);
-        let options = CompressOptions {
-            format: CompressFormat::Cosmoz {
-                chunk_size: 1024 * 1024,
-            },
-            ..CompressOptions::cosmoz()
-        };
-        let mut workspace = EncodeWorkspace::new_boxed();
-        let mut output = vec![0u8; get_max_compressed_size(text.len(), &options)];
-        let written = compress(&text, &mut output, &options, &mut workspace).unwrap();
-        output.truncate(written);
-        let frame = output;
-
-        let header = crate::frame::frame_header::read_frame_header(&frame).unwrap();
-        assert_eq!(header.format, FrameFormat::Cosmoz);
-
-        let index_input = &frame[header.header_length..];
-        let index = crate::frame::chunk_index::ChunkIndex::read(index_input).unwrap();
-        let chunk_blocks_start = header.header_length + index.index_length();
-
-        let block_header =
-            crate::frame::block_header::read_block_header(&frame[chunk_blocks_start..]).unwrap();
-        let block_payload = &frame[chunk_blocks_start + BLOCK_HEADER_LENGTH..][..block_header.block_size];
-
-        let literals_header = crate::block::literals::read_literals_header(block_payload).unwrap();
-        let size_format = (block_payload[0] >> 2) & 0b11;
-        assert_ne!(size_format, 0, "expected a multi-stream literals section");
-
-        let sequences_input =
-            &block_payload[literals_header.header_length + literals_header.compressed_size..];
-        let sequences_header = crate::block::sequences::read_sequences_header(sequences_input).unwrap();
-        assert!(
-            sequences_header.sequence_count >= 2,
-            "expected at least two sequences to exercise the two-stream layout"
-        );
     }
 
     fn make_barely_compressible_bytes(length: usize, seed: u64) -> Vec<u8> {
@@ -1223,54 +772,42 @@ mod tests {
         let mut saw_compressed = false;
         let mut workspace = EncodeWorkspace::new_boxed();
 
-        for format_name in ["zstd", "cosmoz"] {
-            let options = match format_name {
-                "zstd" => CompressOptions::zstd(),
-                _ => CompressOptions::cosmoz(),
-            };
+        let options = CompressOptions::zstd();
 
-            for length in (200..4000).step_by(17) {
-                for seed in [0x1234_5678_9ABC_DEF0u64, 0x0FED_CBA9_8765_4321u64] {
-                    let input = make_barely_compressible_bytes(length, seed ^ length as u64);
+        for length in (200..4000).step_by(17) {
+            for seed in [0x1234_5678_9ABC_DEF0u64, 0x0FED_CBA9_8765_4321u64] {
+                let input = make_barely_compressible_bytes(length, seed ^ length as u64);
 
-                    let mut frame = vec![0u8; get_max_compressed_size(input.len(), &options)];
-                    let written = compress(&input, &mut frame, &options, &mut workspace).unwrap();
-                    frame.truncate(written);
+                let mut frame = vec![0u8; get_max_compressed_size(input.len(), &options)];
+                let written = compress(&input, &mut frame, &options, &mut workspace).unwrap();
+                frame.truncate(written);
 
-                    let header = crate::frame::frame_header::read_frame_header(&frame).unwrap();
-                    let block_start = if format_name == "zstd" {
-                        header.header_length
-                    } else {
-                        let index =
-                            crate::frame::chunk_index::ChunkIndex::read(&frame[header.header_length..])
-                                .unwrap();
-                        header.header_length + index.index_length()
-                    };
-                    let block_header =
-                        crate::frame::block_header::read_block_header(&frame[block_start..]).unwrap();
-                    match block_header.block_type {
-                        crate::frame::block_header::BlockType::Raw => saw_raw = true,
-                        crate::frame::block_header::BlockType::Compressed => saw_compressed = true,
-                        crate::frame::block_header::BlockType::Rle => {}
-                    }
+                let header = crate::frame::frame_header::read_frame_header(&frame).unwrap();
+                let block_header =
+                    crate::frame::block_header::read_block_header(&frame[header.header_length..])
+                        .unwrap();
+                match block_header.block_type {
+                    crate::frame::block_header::BlockType::Raw => saw_raw = true,
+                    crate::frame::block_header::BlockType::Compressed => saw_compressed = true,
+                    crate::frame::block_header::BlockType::Rle => {}
+                }
 
-                    let mut decode_workspace = DecodeWorkspace::new_boxed();
-                    let mut decoded = vec![0u8; input.len() + 4096];
-                    let decoded_length =
-                        decompress(&frame, &mut decoded, &mut decode_workspace).unwrap();
-                    decoded.truncate(decoded_length);
+                let mut decode_workspace = DecodeWorkspace::new_boxed();
+                let mut decoded = vec![0u8; input.len() + 4096];
+                let decoded_length =
+                    decompress(&frame, &mut decoded, &mut decode_workspace).unwrap();
+                decoded.truncate(decoded_length);
+                assert_eq!(
+                    decoded, input,
+                    "our decoder disagreed for length {length} seed {seed:#x}"
+                );
+
+                if cli_available {
+                    let cli_decoded = decompress_with_cli(&frame);
                     assert_eq!(
-                        decoded, input,
-                        "our decoder disagreed for {format_name} length {length} seed {seed:#x}"
+                        cli_decoded, input,
+                        "zstd cli disagreed for length {length} seed {seed:#x}"
                     );
-
-                    if format_name == "zstd" && cli_available {
-                        let cli_decoded = decompress_with_cli(&frame);
-                        assert_eq!(
-                            cli_decoded, input,
-                            "zstd cli disagreed for length {length} seed {seed:#x}"
-                        );
-                    }
                 }
             }
         }
@@ -1331,32 +868,19 @@ mod tests {
         input
     }
 
-    struct CompressedBlockInfo {
-        literals_type: crate::block::literals::LiteralsType,
-        literal_length_mode: TableMode,
-        offset_mode: TableMode,
-        match_length_mode: TableMode,
+    fn read_literals_type(body: &[u8]) -> crate::block::literals::LiteralsType {
+        crate::block::literals::read_literals_header(body)
+            .unwrap()
+            .literals_type
     }
 
-    fn read_compressed_block_info(body: &[u8]) -> CompressedBlockInfo {
-        let literals_header = crate::block::literals::read_literals_header(body).unwrap();
-        let sequences_input = &body[literals_header.header_length + literals_header.compressed_size..];
-        let sequences_header = crate::block::sequences::read_sequences_header(sequences_input).unwrap();
-        CompressedBlockInfo {
-            literals_type: literals_header.literals_type,
-            literal_length_mode: sequences_header.literal_length_mode,
-            offset_mode: sequences_header.offset_mode,
-            match_length_mode: sequences_header.match_length_mode,
-        }
-    }
-
-    fn walk_blocks(mut stream: &[u8]) -> Vec<Option<CompressedBlockInfo>> {
+    fn walk_blocks(mut stream: &[u8]) -> Vec<Option<crate::block::literals::LiteralsType>> {
         let mut blocks = Vec::new();
         loop {
             let header = crate::frame::block_header::read_block_header(stream).unwrap();
             let body = &stream[3..3 + header.block_size];
             let info = match header.block_type {
-                crate::frame::block_header::BlockType::Compressed => Some(read_compressed_block_info(body)),
+                crate::frame::block_header::BlockType::Compressed => Some(read_literals_type(body)),
                 _ => None,
             };
             blocks.push(info);
@@ -1368,30 +892,9 @@ mod tests {
         blocks
     }
 
-    fn zstd_frame_blocks(frame: &[u8]) -> Vec<Option<CompressedBlockInfo>> {
+    fn zstd_frame_blocks(frame: &[u8]) -> Vec<Option<crate::block::literals::LiteralsType>> {
         let header = crate::frame::frame_header::read_frame_header(frame).unwrap();
         walk_blocks(&frame[header.header_length..])
-    }
-
-    fn cosmoz_chunk_first_blocks(frame: &[u8]) -> Vec<Option<CompressedBlockInfo>> {
-        let header = crate::frame::frame_header::read_frame_header(frame).unwrap();
-        let index_input = &frame[header.header_length..];
-        let index = crate::frame::chunk_index::ChunkIndex::read(index_input).unwrap();
-        let mut chunk_start = header.header_length + index.index_length();
-        let mut first_blocks = Vec::new();
-        for chunk_number in 0..index.chunk_count {
-            let entry = index.get_entry(chunk_number);
-            let chunk_bytes = &frame[chunk_start..chunk_start + entry.compressed_length];
-            let block_header = crate::frame::block_header::read_block_header(chunk_bytes).unwrap();
-            let body = &chunk_bytes[3..3 + block_header.block_size];
-            let info = match block_header.block_type {
-                crate::frame::block_header::BlockType::Compressed => Some(read_compressed_block_info(body)),
-                _ => None,
-            };
-            first_blocks.push(info);
-            chunk_start += entry.compressed_length;
-        }
-        first_blocks
     }
 
     #[test]
@@ -1407,8 +910,8 @@ mod tests {
         assert!(blocks.len() >= 6, "expected at least six blocks");
 
         let mut saw_treeless = false;
-        for block in blocks.iter().flatten() {
-            if block.literals_type == crate::block::literals::LiteralsType::Treeless {
+        for literals_type in blocks.iter().flatten() {
+            if *literals_type == crate::block::literals::LiteralsType::Treeless {
                 saw_treeless = true;
             }
         }
@@ -1417,41 +920,6 @@ mod tests {
         if find_zstd_cli().is_some() {
             let decoded_by_cli = decompress_with_cli(&zstd_frame);
             assert_eq!(decoded_by_cli, input);
-        }
-
-        let cosmoz_options = CompressOptions::cosmoz();
-        let cosmoz_frame = compress_with_cosmoz(&input, &cosmoz_options);
-        let decoded_cosmoz = decompress_with_cosmoz(&cosmoz_frame);
-        assert_eq!(decoded_cosmoz, input);
-    }
-
-    #[test]
-    fn first_block_after_a_chunk_boundary_never_uses_repeat_or_treeless() {
-        let input = six_similar_blocks();
-        let block_size = MAX_BLOCK_SIZE;
-
-        let options = CompressOptions {
-            format: CompressFormat::Cosmoz {
-                chunk_size: block_size * 2,
-            },
-            with_checksum: true,
-            level: 1,
-        };
-        let cosmoz_frame = compress_with_cosmoz(&input, &options);
-        let decoded = decompress_with_cosmoz(&cosmoz_frame);
-        assert_eq!(decoded, input);
-
-        let first_blocks = cosmoz_chunk_first_blocks(&cosmoz_frame);
-        assert!(
-            first_blocks.len() >= 2,
-            "expected at least two chunks for this input and chunk size"
-        );
-
-        for first_block in first_blocks.iter().flatten() {
-            assert_ne!(first_block.literals_type, crate::block::literals::LiteralsType::Treeless);
-            assert_ne!(first_block.literal_length_mode, TableMode::Repeat);
-            assert_ne!(first_block.offset_mode, TableMode::Repeat);
-            assert_ne!(first_block.match_length_mode, TableMode::Repeat);
         }
     }
 }

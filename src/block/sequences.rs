@@ -17,7 +17,6 @@ use crate::{
         },
     },
     error::DecodeError,
-    frame::frame_header::FrameFormat,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -286,9 +285,7 @@ impl<'input> SequenceStream<'input> {
 
 pub(crate) struct SequenceDecoder<'input, 'tables> {
     tables: &'tables SequenceTables,
-    first_stream: SequenceStream<'input>,
-    second_stream: Option<SequenceStream<'input>>,
-    read_from_second_next: bool,
+    stream: SequenceStream<'input>,
 }
 
 impl<'input, 'tables> SequenceDecoder<'input, 'tables> {
@@ -296,79 +293,22 @@ impl<'input, 'tables> SequenceDecoder<'input, 'tables> {
         input: &'input [u8],
         tables: &'tables SequenceTables,
         sequence_count: usize,
-        format: FrameFormat,
     ) -> Result<Self, DecodeError> {
-        if format == FrameFormat::Cosmoz && sequence_count >= 2 {
-            let length_bytes = input.get(0..4).ok_or(DecodeError::BadSequencesHeader)?;
-            let first_stream_length = u32::from_le_bytes([
-                length_bytes[0],
-                length_bytes[1],
-                length_bytes[2],
-                length_bytes[3],
-            ]) as usize;
-            let remaining = input.get(4..).ok_or(DecodeError::BadSequencesHeader)?;
-            let first_stream_input = remaining
-                .get(..first_stream_length)
-                .ok_or(DecodeError::BadSequencesHeader)?;
-            let second_stream_input = remaining
-                .get(first_stream_length..)
-                .ok_or(DecodeError::BadSequencesHeader)?;
-
-            let first_stream_count = sequence_count.div_ceil(2);
-            let second_stream_count = sequence_count / 2;
-
-            let first_stream = SequenceStream::new(first_stream_input, tables, first_stream_count)?;
-            let second_stream =
-                SequenceStream::new(second_stream_input, tables, second_stream_count)?;
-
-            return Ok(Self {
-                tables,
-                first_stream,
-                second_stream: Some(second_stream),
-                read_from_second_next: false,
-            });
-        }
-
-        let first_stream = SequenceStream::new(input, tables, sequence_count)?;
         Ok(Self {
             tables,
-            first_stream,
-            second_stream: None,
-            read_from_second_next: false,
+            stream: SequenceStream::new(input, tables, sequence_count)?,
         })
     }
 
     pub(crate) fn is_finished(&self) -> bool {
-        let second_finished = match &self.second_stream {
-            Some(second_stream) => second_stream.is_finished(),
-            None => true,
-        };
-        self.first_stream.is_finished() && second_finished
+        self.stream.is_finished()
     }
 
     pub(crate) fn next_sequence(
         &mut self,
         repeat_offsets: &mut RepeatOffsets,
     ) -> Option<Result<Sequence, DecodeError>> {
-        let Some(second_stream) = self.second_stream.as_mut() else {
-            return self.first_stream.next_sequence(self.tables, repeat_offsets);
-        };
-
-        let take_from_second = self.read_from_second_next && second_stream.sequences_left > 0;
-        let take_from_first = !take_from_second && self.first_stream.sequences_left > 0;
-
-        if take_from_first {
-            self.read_from_second_next = true;
-            return self.first_stream.next_sequence(self.tables, repeat_offsets);
-        }
-        if take_from_second {
-            self.read_from_second_next = false;
-            return second_stream.next_sequence(self.tables, repeat_offsets);
-        }
-        if second_stream.sequences_left > 0 {
-            return second_stream.next_sequence(self.tables, repeat_offsets);
-        }
-        None
+        self.stream.next_sequence(self.tables, repeat_offsets)
     }
 }
 
@@ -480,7 +420,6 @@ mod tests {
             &sequences_section[bitstream_start..],
             &tables,
             header.sequence_count,
-            FrameFormat::Zstd,
         )
         .unwrap();
 

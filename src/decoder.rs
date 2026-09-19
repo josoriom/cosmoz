@@ -1,15 +1,13 @@
 use crate::block::repeat_offsets::RepeatOffsets;
 #[cfg(feature = "checksum")]
-use crate::hash::{xxhash3::XxHash3, xxhash64::XxHash64};
+use crate::hash::xxhash64::XxHash64;
 use crate::{
     block::block_decoder::{BlockWorkspace, decode_block, decode_compressed_block_pair},
     error::DecodeError,
     frame::{
         block_header::{BLOCK_HEADER_LENGTH, BlockHeader, BlockType, read_block_header},
-        chunk_index::ChunkIndex,
         frame_header::{
-            FrameFormat, FrameHeader, get_skippable_frame_length, is_skippable_frame,
-            read_frame_header,
+            FrameHeader, get_skippable_frame_length, is_skippable_frame, read_frame_header,
         },
     },
 };
@@ -57,10 +55,6 @@ unsafe fn write_initial_values_unchecked(target: *mut DecodeWorkspace) {
                 third: 8,
             },
         );
-        core::ptr::write(
-            core::ptr::addr_of_mut!((*block).frame_format),
-            FrameFormat::Zstd,
-        );
         let fast_sequence_tables = core::ptr::addr_of_mut!((*block).fast_sequence_tables);
         core::ptr::write(
             core::ptr::addr_of_mut!((*fast_sequence_tables).literal_length_dirty),
@@ -99,10 +93,6 @@ mod new_boxed_tests {
             stack_workspace.block.repeat_offsets.third
         );
         assert_eq!(
-            boxed_workspace.block.frame_format,
-            stack_workspace.block.frame_format
-        );
-        assert_eq!(
             boxed_workspace.block.huffman_tables[0].is_ready,
             stack_workspace.block.huffman_tables[0].is_ready
         );
@@ -118,40 +108,6 @@ mod new_boxed_tests {
             boxed_workspace.block.sequence_tables.match_length_ready,
             stack_workspace.block.sequence_tables.match_length_ready
         );
-    }
-}
-
-#[cfg(feature = "checksum")]
-#[allow(clippy::large_enum_variant)]
-enum ContentHasher {
-    Zstd(XxHash64),
-    Cosmoz(XxHash3),
-}
-
-#[cfg(feature = "checksum")]
-impl ContentHasher {
-    fn new(format: FrameFormat) -> Self {
-        match format {
-            FrameFormat::Zstd => ContentHasher::Zstd(XxHash64::new(0)),
-            FrameFormat::Cosmoz => ContentHasher::Cosmoz(XxHash3::new()),
-        }
-    }
-
-    fn update(&mut self, input: &[u8]) {
-        match self {
-            ContentHasher::Zstd(hasher) => hasher.update(input),
-            ContentHasher::Cosmoz(hasher) => hasher.update(input),
-        }
-    }
-
-    fn matches_checksum(&self, expected_bytes: &[u8]) -> bool {
-        match self {
-            ContentHasher::Zstd(hasher) => {
-                let low_32_bits = (hasher.finish() & 0xFFFF_FFFF) as u32;
-                expected_bytes == low_32_bits.to_le_bytes()
-            }
-            ContentHasher::Cosmoz(hasher) => expected_bytes == hasher.finish().to_le_bytes(),
-        }
     }
 }
 
@@ -231,13 +187,6 @@ fn read_next_compressed_block(
 }
 
 fn skip_frame_body(input: &[u8], header: &FrameHeader) -> Result<usize, DecodeError> {
-    match header.format {
-        FrameFormat::Zstd => skip_zstd_frame_body(input, header),
-        FrameFormat::Cosmoz => skip_cosmoz_frame_body(input, header),
-    }
-}
-
-fn skip_zstd_frame_body(input: &[u8], header: &FrameHeader) -> Result<usize, DecodeError> {
     let mut position = header.header_length;
 
     loop {
@@ -253,30 +202,6 @@ fn skip_zstd_frame_body(input: &[u8], header: &FrameHeader) -> Result<usize, Dec
             break;
         }
     }
-
-    let checksum_length = header.checksum_length();
-    if input.len() < position + checksum_length {
-        return Err(DecodeError::InputTooShort);
-    }
-    position += checksum_length;
-
-    Ok(position)
-}
-
-fn skip_cosmoz_frame_body(input: &[u8], header: &FrameHeader) -> Result<usize, DecodeError> {
-    let index_input = input
-        .get(header.header_length..)
-        .ok_or(DecodeError::InputTooShort)?;
-    let index = ChunkIndex::read(index_input)?;
-    let total_compressed_length = index.total_compressed_length()?;
-
-    let mut position = header
-        .header_length
-        .checked_add(index.index_length())
-        .ok_or(DecodeError::BadFrameHeader)?;
-    position = position
-        .checked_add(total_compressed_length)
-        .ok_or(DecodeError::BadFrameHeader)?;
 
     let checksum_length = header.checksum_length();
     if input.len() < position + checksum_length {
@@ -368,22 +293,13 @@ fn decode_frame(
     let header = read_frame_header(input)?;
     let frame_start_output_position = output_position;
 
-    let (mut input_position, position) = match header.format {
-        FrameFormat::Zstd => decode_zstd_frame_body(
-            input,
-            &header,
-            output,
-            frame_start_output_position,
-            workspace,
-        )?,
-        FrameFormat::Cosmoz => decode_cosmoz_frame_body(
-            input,
-            &header,
-            output,
-            frame_start_output_position,
-            workspace,
-        )?,
-    };
+    let (mut input_position, position) = decode_frame_body(
+        input,
+        &header,
+        output,
+        frame_start_output_position,
+        workspace,
+    )?;
 
     #[cfg(feature = "checksum")]
     {
@@ -392,7 +308,7 @@ fn decode_frame(
             let expected_bytes = input
                 .get(input_position..input_position + checksum_length)
                 .ok_or(DecodeError::InputTooShort)?;
-            let mut hasher = ContentHasher::new(header.format);
+            let mut hasher = XxHash64::new(0);
             hasher.update(&output[frame_start_output_position..position]);
             check_content_checksum(expected_bytes, &hasher)?;
         }
@@ -417,14 +333,14 @@ fn decode_frame(
     Ok((input_position, position))
 }
 
-fn decode_zstd_frame_body(
+fn decode_frame_body(
     input: &[u8],
     header: &FrameHeader,
     output: &mut [u8],
     frame_start_output_position: usize,
     workspace: &mut DecodeWorkspace,
 ) -> Result<(usize, usize), DecodeError> {
-    workspace.block.reset_history(header.format);
+    workspace.block.reset_history();
     let frame_output = output
         .get_mut(frame_start_output_position..)
         .ok_or(DecodeError::OutputTooSmall)?;
@@ -439,103 +355,10 @@ fn decode_zstd_frame_body(
     ))
 }
 
-fn decode_cosmoz_frame_body(
-    input: &[u8],
-    header: &FrameHeader,
-    output: &mut [u8],
-    frame_start_output_position: usize,
-    workspace: &mut DecodeWorkspace,
-) -> Result<(usize, usize), DecodeError> {
-    let content_size = header.content_size.ok_or(DecodeError::BadFrameHeader)?;
-
-    let index_input = input
-        .get(header.header_length..)
-        .ok_or(DecodeError::InputTooShort)?;
-    let index = ChunkIndex::read(index_input)?;
-
-    if index.total_decompressed_length()? != content_size {
-        return Err(DecodeError::BadFrameHeader);
-    }
-
-    let total_compressed_length = index.total_compressed_length()?;
-    let chunks_input_start = header
-        .header_length
-        .checked_add(index.index_length())
-        .ok_or(DecodeError::BadFrameHeader)?;
-    let chunks_input_end = chunks_input_start
-        .checked_add(total_compressed_length)
-        .ok_or(DecodeError::BadFrameHeader)?;
-    let chunks_input = input
-        .get(chunks_input_start..chunks_input_end)
-        .ok_or(DecodeError::InputTooShort)?;
-
-    let content_size_as_usize =
-        usize::try_from(content_size).map_err(|_| DecodeError::OutputTooSmall)?;
-    let output_end = frame_start_output_position
-        .checked_add(content_size_as_usize)
-        .ok_or(DecodeError::OutputTooSmall)?;
-    let output_region = output
-        .get_mut(frame_start_output_position..output_end)
-        .ok_or(DecodeError::OutputTooSmall)?;
-
-    decode_cosmoz_chunks(chunks_input, &index, output_region, workspace)?;
-
-    Ok((chunks_input_end, output_end))
-}
-
-fn decode_cosmoz_chunks(
-    chunks_input: &[u8],
-    index: &ChunkIndex,
-    output: &mut [u8],
-    workspace: &mut DecodeWorkspace,
-) -> Result<(), DecodeError> {
-    #[cfg(feature = "parallel")]
-    {
-        if index.chunk_count >= 2 {
-            return crate::parallel_decoder::decode_chunks_in_parallel(chunks_input, index, output);
-        }
-    }
-    decode_cosmoz_chunks_sequentially(chunks_input, index, output, &mut workspace.block)
-}
-
-fn decode_cosmoz_chunks_sequentially(
-    chunks_input: &[u8],
-    index: &ChunkIndex,
-    output: &mut [u8],
-    block_workspace: &mut BlockWorkspace,
-) -> Result<(), DecodeError> {
-    let mut input_offset = 0usize;
-    let mut output_offset = 0usize;
-
-    for chunk_number in 0..index.chunk_count {
-        let entry = index.get_entry(chunk_number);
-        let chunk_input = chunks_input
-            .get(input_offset..input_offset + entry.compressed_length)
-            .ok_or(DecodeError::InputTooShort)?;
-        let chunk_output = output
-            .get_mut(output_offset..output_offset + entry.decompressed_length)
-            .ok_or(DecodeError::OutputTooSmall)?;
-
-        block_workspace.reset_history(FrameFormat::Cosmoz);
-        let (bytes_consumed, bytes_written) =
-            decode_block_sequence(chunk_input, chunk_output, block_workspace)?;
-        if bytes_consumed != chunk_input.len() || bytes_written != entry.decompressed_length {
-            return Err(DecodeError::BadFrameHeader);
-        }
-
-        input_offset += entry.compressed_length;
-        output_offset += entry.decompressed_length;
-    }
-
-    Ok(())
-}
-
 #[cfg(feature = "checksum")]
-fn check_content_checksum(
-    expected_bytes: &[u8],
-    hasher: &ContentHasher,
-) -> Result<(), DecodeError> {
-    if hasher.matches_checksum(expected_bytes) {
+fn check_content_checksum(expected_bytes: &[u8], hasher: &XxHash64) -> Result<(), DecodeError> {
+    let low_32_bits = (hasher.finish() & 0xFFFF_FFFF) as u32;
+    if expected_bytes == low_32_bits.to_le_bytes() {
         Ok(())
     } else {
         Err(DecodeError::ChecksumMismatch)
@@ -545,7 +368,6 @@ fn check_content_checksum(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hash::xxhash3;
 
     const TEXT_500_WITH_CHECKSUM: [u8; 68] = [
         0x28, 0xb5, 0x2f, 0xfd, 0x64, 0xf4, 0x00, 0xb5, 0x01, 0x00, 0xd4, 0x02, 0x54, 0x68, 0x65,
@@ -667,52 +489,6 @@ mod tests {
         assert_eq!(&output[500..1000], text.as_slice());
     }
 
-    fn build_cosmoz_frame() -> Vec<u8> {
-        let zstd_checksum_length = 4;
-        let header = read_frame_header(&TEXT_500_WITH_CHECKSUM).unwrap();
-        let header_length = header.header_length;
-        let content_size = header.content_size.unwrap();
-        let blocks = &TEXT_500_WITH_CHECKSUM
-            [header_length..TEXT_500_WITH_CHECKSUM.len() - zstd_checksum_length];
-
-        let mut frame = Vec::new();
-        frame.extend_from_slice(&[0x4F, 0x53, 0x4D, 0x4F]);
-        frame.extend_from_slice(&TEXT_500_WITH_CHECKSUM[4..header_length]);
-
-        frame.extend_from_slice(&1u32.to_le_bytes());
-        frame.extend_from_slice(&(blocks.len() as u32).to_le_bytes());
-        frame.extend_from_slice(&(content_size as u32).to_le_bytes());
-
-        frame.extend_from_slice(blocks);
-
-        let checksum = xxhash3::hash_bytes(&expected_text());
-        frame.extend_from_slice(&checksum.to_le_bytes());
-        frame
-    }
-
-    #[test]
-    fn decompresses_an_cosmoz_frame_with_checksum() {
-        let frame = build_cosmoz_frame();
-        let mut workspace = DecodeWorkspace::new_boxed();
-        let mut output = [0u8; 1024];
-        let written = decompress(&frame, &mut output, &mut workspace).unwrap();
-        assert_eq!(written, 500);
-        assert_eq!(&output[..written], expected_text().as_slice());
-    }
-
-    #[test]
-    fn rejects_flipped_cosmoz_checksum_byte() {
-        let mut frame = build_cosmoz_frame();
-        let last_index = frame.len() - 1;
-        frame[last_index] ^= 0xFF;
-        let mut workspace = DecodeWorkspace::new_boxed();
-        let mut output = [0u8; 1024];
-        assert_eq!(
-            decompress(&frame, &mut output, &mut workspace),
-            Err(DecodeError::ChecksumMismatch)
-        );
-    }
-
     #[test]
     fn rejects_output_buffer_one_byte_too_small() {
         let mut workspace = DecodeWorkspace::new_boxed();
@@ -720,78 +496,6 @@ mod tests {
         assert_eq!(
             decompress(&TEXT_500_WITH_CHECKSUM, &mut output, &mut workspace),
             Err(DecodeError::OutputTooSmall)
-        );
-    }
-
-    #[test]
-    fn decompresses_an_cosmoz_frame_with_empty_content() {
-        let mut frame = Vec::new();
-        frame.extend_from_slice(&[0x4F, 0x53, 0x4D, 0x4F]);
-        frame.push(0x24);
-        frame.push(0x00);
-
-        frame.extend_from_slice(&1u32.to_le_bytes());
-        frame.extend_from_slice(&3u32.to_le_bytes());
-        frame.extend_from_slice(&0u32.to_le_bytes());
-
-        frame.extend_from_slice(&[0x01, 0x00, 0x00]);
-
-        let checksum = xxhash3::hash_bytes(&[]);
-        frame.extend_from_slice(&checksum.to_le_bytes());
-
-        let mut workspace = DecodeWorkspace::new_boxed();
-        let mut output = [0u8; 16];
-        let written = decompress(&frame, &mut output, &mut workspace).unwrap();
-        assert_eq!(written, 0);
-    }
-
-    #[test]
-    fn rejects_cosmoz_frame_without_content_size() {
-        let input = [0x4F, 0x53, 0x4D, 0x4F, 0x00, 0x00];
-        assert_eq!(read_frame_header(&input), Err(DecodeError::BadFrameHeader));
-    }
-
-    #[cfg(feature = "compression")]
-    #[test]
-    fn rejects_cosmoz_frame_with_wrong_chunk_sum() {
-        use crate::encoder::{CompressFormat, CompressOptions, EncodeWorkspace, compress, get_max_compressed_size};
-        use crate::frame::chunk_index::CHUNK_COUNT_LENGTH;
-
-        fn make_text(length: usize) -> Vec<u8> {
-            let sentence = b"the quick brown fox jumps over the lazy dog. ";
-            let mut text = Vec::with_capacity(length + sentence.len());
-            while text.len() < length {
-                text.extend_from_slice(sentence);
-            }
-            text.truncate(length);
-            text
-        }
-
-        let mut concatenated = make_text(10_000);
-        concatenated.extend_from_slice(&make_text(20_000));
-
-        let options = CompressOptions {
-            format: CompressFormat::Cosmoz { chunk_size: 10_000 },
-            with_checksum: true,
-            level: 1,
-        };
-        let mut workspace = EncodeWorkspace::new_boxed();
-        let mut frame = vec![0u8; get_max_compressed_size(concatenated.len(), &options)];
-        let written = compress(&concatenated, &mut frame, &options, &mut workspace).unwrap();
-        frame.truncate(written);
-
-        let header = read_frame_header(&frame).unwrap();
-        let compressed_length_field = 4;
-        let first_entry_decompressed_length_offset =
-            header.header_length + CHUNK_COUNT_LENGTH + compressed_length_field;
-        frame[first_entry_decompressed_length_offset] =
-            frame[first_entry_decompressed_length_offset].wrapping_add(1);
-
-        let mut decode_workspace = DecodeWorkspace::new_boxed();
-        let mut output = vec![0u8; concatenated.len() + 4096];
-        assert_eq!(
-            decompress(&frame, &mut output, &mut decode_workspace),
-            Err(DecodeError::BadFrameHeader)
         );
     }
 

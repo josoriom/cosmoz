@@ -2,7 +2,7 @@
 use crate::encode_error::EncodeError;
 
 #[cfg(feature = "compression")]
-use super::options::{CompressOptions, Format};
+use super::options::CompressOptions;
 
 use crate::error::DecodeError;
 
@@ -16,9 +16,6 @@ pub struct Bytes;
 fn build_stream_encoder(
     options: &CompressOptions,
 ) -> Result<crate::stream_encoder::StreamEncoder, EncodeError> {
-    if !matches!(options.format, Format::Zstd) {
-        return Err(EncodeError::BadOptions);
-    }
     crate::stream_encoder::StreamEncoder::new(options.level, options.checksum)
 }
 

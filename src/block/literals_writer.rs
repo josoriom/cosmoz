@@ -4,12 +4,11 @@ use crate::{
     entropy::{
         fse_encode_table::FseEncodeTable,
         histogram::count_symbols,
-        huffman_encode::{encode_many_streams, encode_one_stream},
+        huffman_encode::{encode_four_streams, encode_one_stream},
         huffman_encode_table::{
             HuffmanEncodeTable, build_huffman_encode_table, write_huffman_table,
         },
     },
-    frame::frame_header::FrameFormat,
 };
 
 pub(crate) const ONE_STREAM_MAX_SIZE: usize = 1023;
@@ -17,7 +16,6 @@ pub(crate) const MULTI_STREAM_MIN_SIZE: usize = 256;
 
 pub(crate) fn write_literals(
     input: &[u8],
-    format: FrameFormat,
     output: &mut [u8],
     huffman_table: &mut HuffmanEncodeTable,
     weight_fse_table: &mut FseEncodeTable,
@@ -35,7 +33,6 @@ pub(crate) fn write_literals(
 
     match write_compressed_literals(
         input,
-        format,
         output,
         huffman_table,
         weight_fse_table,
@@ -96,7 +93,6 @@ fn estimate_huffman_bit_cost(counts: &[u32; 256], table: &HuffmanEncodeTable) ->
 
 fn write_compressed_literals(
     input: &[u8],
-    format: FrameFormat,
     output: &mut [u8],
     huffman_table: &mut HuffmanEncodeTable,
     weight_fse_table: &mut FseEncodeTable,
@@ -136,7 +132,7 @@ fn write_compressed_literals(
     };
 
     let regenerated_size = input.len();
-    let stream_count = pick_stream_count(format, regenerated_size);
+    let stream_count = pick_stream_count(regenerated_size);
     let size_format = pick_size_format_from_regenerated_size(stream_count, regenerated_size)
         .ok_or(EncodeError::TableNotUsable)?;
     let literals_type = if use_treeless {
@@ -172,7 +168,7 @@ fn write_compressed_literals(
     let stream_bytes = if stream_count == 1 {
         encode_one_stream(input, encode_table, stream_output)?
     } else {
-        encode_many_streams(input, encode_table, stream_count, stream_output)?
+        encode_four_streams(input, encode_table, stream_output)?
     };
 
     let compressed_size = table_bytes + stream_bytes;
@@ -279,20 +275,12 @@ fn pick_raw_size_format(length: usize) -> Result<u8, EncodeError> {
     }
 }
 
-fn pick_stream_count(format: FrameFormat, length: usize) -> usize {
+fn pick_stream_count(length: usize) -> usize {
     if length < MULTI_STREAM_MIN_SIZE {
         return 1;
     }
-    let stream_count = match format {
-        FrameFormat::Zstd => 4,
-        FrameFormat::Cosmoz => 8,
-    };
-    let segment = length.div_ceil(stream_count);
-    if (stream_count - 1) * segment > length {
-        1
-    } else {
-        stream_count
-    }
+    let segment = length.div_ceil(4);
+    if 3 * segment > length { 1 } else { 4 }
 }
 
 fn pick_size_format_from_regenerated_size(
@@ -353,14 +341,13 @@ behind the distant hills and the wind carries the scent of rain across the quiet
         text
     }
 
-    fn round_trip(input: &[u8], format: FrameFormat) -> Vec<u8> {
+    fn round_trip(input: &[u8]) -> Vec<u8> {
         let mut huffman_encode_table = HuffmanEncodeTable::new();
         let mut weight_fse_table = FseEncodeTable::new();
         let mut output = vec![0u8; input.len() * 2 + 1024];
 
         let bytes_written = write_literals(
             input,
-            format,
             &mut output,
             &mut huffman_encode_table,
             &mut weight_fse_table,
@@ -375,7 +362,6 @@ behind the distant hills and the wind carries the scent of rain across the quiet
 
         let (source, bytes_consumed) = decode_literals(
             &output[..bytes_written],
-            format,
             &mut huffman_decode_table,
             &mut weight_fse_table,
             &mut decoded,
@@ -395,7 +381,7 @@ behind the distant hills and the wind carries the scent of rain across the quiet
     #[test]
     fn round_trips_a_hundred_bytes_with_one_stream() {
         let input = repeating_text(100);
-        let decoded = round_trip(&input, FrameFormat::Zstd);
+        let decoded = round_trip(&input);
         assert_eq!(decoded, input);
     }
 
@@ -403,7 +389,7 @@ behind the distant hills and the wind carries the scent of rain across the quiet
     fn round_trips_twenty_kilobytes_as_zstd_with_four_streams() {
         let input = repeating_text(20 * 1024);
 
-        let stream_count = pick_stream_count(FrameFormat::Zstd, input.len());
+        let stream_count = pick_stream_count(input.len());
         assert_eq!(stream_count, 4);
         assert_eq!((stream_count - 1) * 2, 6);
 
@@ -412,7 +398,6 @@ behind the distant hills and the wind carries the scent of rain across the quiet
         let mut output = vec![0u8; input.len() * 2 + 1024];
         let bytes_written = write_literals(
             &input,
-            FrameFormat::Zstd,
             &mut output,
             &mut huffman_encode_table,
             &mut weight_fse_table,
@@ -426,45 +411,14 @@ behind the distant hills and the wind carries the scent of rain across the quiet
         let size_format = (output[0] >> 2) & 0b11;
         assert_ne!(size_format, 0);
 
-        let decoded = round_trip(&input, FrameFormat::Zstd);
-        assert_eq!(decoded, input);
-    }
-
-    #[test]
-    fn round_trips_twenty_kilobytes_as_cosmoz_with_eight_streams() {
-        let input = repeating_text(20 * 1024);
-
-        let stream_count = pick_stream_count(FrameFormat::Cosmoz, input.len());
-        assert_eq!(stream_count, 8);
-        assert_eq!((stream_count - 1) * 2, 14);
-
-        let mut huffman_encode_table = HuffmanEncodeTable::new();
-        let mut weight_fse_table = FseEncodeTable::new();
-        let mut output = vec![0u8; input.len() * 2 + 1024];
-        let bytes_written = write_literals(
-            &input,
-            FrameFormat::Cosmoz,
-            &mut output,
-            &mut huffman_encode_table,
-            &mut weight_fse_table,
-            false,
-            None,
-        )
-        .unwrap();
-
-        let header = read_literals_header(&output[..bytes_written]).unwrap();
-        assert_eq!(header.literals_type, LiteralsType::Compressed);
-        let size_format = (output[0] >> 2) & 0b11;
-        assert_ne!(size_format, 0);
-
-        let decoded = round_trip(&input, FrameFormat::Cosmoz);
+        let decoded = round_trip(&input);
         assert_eq!(decoded, input);
     }
 
     #[test]
     fn writes_rle_for_five_kilobytes_of_one_byte() {
         let input = vec![0x37u8; 5 * 1024];
-        let decoded = round_trip(&input, FrameFormat::Zstd);
+        let decoded = round_trip(&input);
         assert_eq!(decoded, input);
 
         let mut huffman_encode_table = HuffmanEncodeTable::new();
@@ -472,7 +426,6 @@ behind the distant hills and the wind carries the scent of rain across the quiet
         let mut output = vec![0u8; input.len() * 2];
         let bytes_written = write_literals(
             &input,
-            FrameFormat::Zstd,
             &mut output,
             &mut huffman_encode_table,
             &mut weight_fse_table,
@@ -492,7 +445,7 @@ behind the distant hills and the wind carries the scent of rain across the quiet
             *byte = (random.next_u64() & 0xFF) as u8;
         }
 
-        let decoded = round_trip(&input, FrameFormat::Zstd);
+        let decoded = round_trip(&input);
         assert_eq!(decoded, input);
 
         let mut huffman_encode_table = HuffmanEncodeTable::new();
@@ -500,7 +453,6 @@ behind the distant hills and the wind carries the scent of rain across the quiet
         let mut output = vec![0u8; input.len() * 2];
         let bytes_written = write_literals(
             &input,
-            FrameFormat::Zstd,
             &mut output,
             &mut huffman_encode_table,
             &mut weight_fse_table,
