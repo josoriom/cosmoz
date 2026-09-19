@@ -61,6 +61,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 `Compressor`/`Decompressor` accept input in any chunk size and buffer internally; `finish` errors if the compressed data ends mid-frame.
 
+`Compressor::new` gives a `Compressor<Bytes>`; `Compressor::to(file, ..)` gives a `Compressor<File>`. Same for `Decompressor`.
+
 Without `std` use `Compressor::new` / `Decompressor::new` with `write` and `finish`; with `std` also `Compressor::to` / `Decompressor::from` which implement `io::Write` / `io::Read`.
 
 ```rust

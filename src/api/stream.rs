@@ -9,10 +9,8 @@ use crate::error::DecodeError;
 use super::options::DecompressOptions;
 
 use super::workspace::Decoder;
-
-#[doc(hidden)]
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct NoSink;
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Bytes;
 
 #[cfg(feature = "compression")]
 fn build_stream_encoder(
@@ -25,8 +23,7 @@ fn build_stream_encoder(
 }
 
 #[cfg(feature = "compression")]
-#[allow(private_interfaces)]
-pub struct Compressor<W = NoSink> {
+pub struct Compressor<W = Bytes> {
     inner: crate::stream_encoder::StreamEncoder,
     #[allow(dead_code)]
     sink: W,
@@ -35,11 +32,11 @@ pub struct Compressor<W = NoSink> {
 }
 
 #[cfg(feature = "compression")]
-impl Compressor<NoSink> {
+impl Compressor<Bytes> {
     pub fn new(options: &CompressOptions) -> Result<Self, EncodeError> {
         Ok(Self {
             inner: build_stream_encoder(options)?,
-            sink: NoSink,
+            sink: Bytes,
             pending: alloc::vec::Vec::new(),
         })
     }
@@ -92,8 +89,7 @@ impl<W: std::io::Write> std::io::Write for Compressor<W> {
     }
 }
 
-#[allow(private_interfaces)]
-pub struct Decompressor<R = NoSink> {
+pub struct Decompressor<R = Bytes> {
     options: DecompressOptions,
     decoder: alloc::boxed::Box<Decoder>,
     pending: alloc::vec::Vec<u8>,
@@ -160,13 +156,13 @@ impl<R> Decompressor<R> {
     }
 }
 
-impl Decompressor<NoSink> {
+impl Decompressor<Bytes> {
     pub fn new(options: &DecompressOptions) -> Result<Self, DecodeError> {
         Ok(Self {
             options: *options,
             decoder: Decoder::new(),
             pending: alloc::vec::Vec::new(),
-            source: NoSink,
+            source: Bytes,
             input_buffer: alloc::vec::Vec::new(),
             output_buffer: alloc::vec::Vec::new(),
             output_position: 0,
