@@ -15,6 +15,16 @@ impl<'output> BackwardBitWriter<'output> {
         self.bit_writer.add_bits(value, count)
     }
 
+    #[inline(always)]
+    pub(crate) fn add_bits_without_flush(&mut self, value: u64, count: usize) {
+        self.bit_writer.add_bits_without_flush(value, count);
+    }
+
+    #[inline(always)]
+    pub(crate) fn flush_whole_bytes(&mut self) {
+        self.bit_writer.flush_whole_bytes();
+    }
+
     pub(crate) fn finish(mut self) -> Result<usize, EncodeError> {
         self.bit_writer.add_bits(1, 1)?;
         self.bit_writer.finish()

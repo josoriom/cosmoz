@@ -14,21 +14,45 @@ use crate::{
 pub(crate) const ONE_STREAM_MAX_SIZE: usize = 1023;
 pub(crate) const MULTI_STREAM_MIN_SIZE: usize = 256;
 
+const MIN_LITERALS_TO_COMPRESS: usize = 64;
+const SAMPLE_SIZE: usize = 4096;
+const SAMPLE_RATIO: usize = 10;
+const SUSPECT_LITERALS_PER_SEQUENCE: usize = 20;
+const TABLE_OVERHEAD: usize = 12;
+
+#[derive(Clone, Copy)]
+pub(crate) struct LiteralsHints<'counts> {
+    pub known_counts: Option<&'counts [u32; 256]>,
+    pub sequence_count: usize,
+    pub allow_quick_raw: bool,
+}
+
 pub(crate) fn write_literals(
     input: &[u8],
     output: &mut [u8],
     huffman_table: &mut HuffmanEncodeTable,
     weight_fse_table: &mut FseEncodeTable,
     table_reuse_allowed: bool,
-    known_counts: Option<&[u32; 256]>,
+    hints: LiteralsHints<'_>,
 ) -> Result<usize, EncodeError> {
-    if input.is_empty() {
+    if input.is_empty() || is_quick_raw(input, hints) {
         return write_raw_literals(input, output);
     }
 
-    let first_byte = input[0];
-    if input.iter().all(|&byte| byte == first_byte) {
-        return write_rle_literals(first_byte, input.len(), output);
+    let counts = match hints.known_counts {
+        Some(known_counts) => *known_counts,
+        None => {
+            let mut counts = [0u32; 256];
+            count_symbols(input, &mut counts);
+            counts
+        }
+    };
+    let largest_count = get_largest_count(&counts);
+    if largest_count == input.len() {
+        return write_rle_literals(input[0], input.len(), output);
+    }
+    if hints.allow_quick_raw && is_too_flat(largest_count, input.len()) {
+        return write_raw_literals(input, output);
     }
 
     match write_compressed_literals(
@@ -37,11 +61,42 @@ pub(crate) fn write_literals(
         huffman_table,
         weight_fse_table,
         table_reuse_allowed,
-        known_counts,
+        &counts,
+        hints.allow_quick_raw,
     ) {
         Ok(written) => Ok(written),
         Err(_) => write_raw_literals(input, output),
     }
+}
+
+fn is_quick_raw(input: &[u8], hints: LiteralsHints<'_>) -> bool {
+    hints.allow_quick_raw
+        && (input.len() < MIN_LITERALS_TO_COMPRESS
+            || (is_suspect_uncompressible(input.len(), hints.sequence_count)
+                && is_sample_uncompressible(input)))
+}
+
+fn is_suspect_uncompressible(literal_count: usize, sequence_count: usize) -> bool {
+    literal_count >= SAMPLE_SIZE * SAMPLE_RATIO
+        && (sequence_count == 0 || literal_count / sequence_count >= SUSPECT_LITERALS_PER_SEQUENCE)
+}
+
+fn is_sample_uncompressible(input: &[u8]) -> bool {
+    let mut counts = [0u32; 256];
+    count_symbols(&input[..SAMPLE_SIZE], &mut counts);
+    let largest_at_start = get_largest_count(&counts);
+    counts = [0u32; 256];
+    count_symbols(&input[input.len() - SAMPLE_SIZE..], &mut counts);
+    let largest_at_end = get_largest_count(&counts);
+    is_too_flat(largest_at_start + largest_at_end, 2 * SAMPLE_SIZE)
+}
+
+fn is_too_flat(largest_count: usize, length: usize) -> bool {
+    largest_count <= (length >> 7) + 4
+}
+
+fn get_largest_count(counts: &[u32; 256]) -> usize {
+    counts.iter().copied().max().unwrap_or(0) as usize
 }
 
 fn write_raw_literals(input: &[u8], output: &mut [u8]) -> Result<usize, EncodeError> {
@@ -97,27 +152,19 @@ fn write_compressed_literals(
     huffman_table: &mut HuffmanEncodeTable,
     weight_fse_table: &mut FseEncodeTable,
     table_reuse_allowed: bool,
-    known_counts: Option<&[u32; 256]>,
+    counts: &[u32; 256],
+    allow_quick_raw: bool,
 ) -> Result<usize, EncodeError> {
-    let counts = match known_counts {
-        Some(known_counts) => *known_counts,
-        None => {
-            let mut counts = [0u32; 256];
-            count_symbols(input, &mut counts);
-            counts
-        }
-    };
-
     let treeless_bit_cost = if table_reuse_allowed {
-        estimate_huffman_bit_cost(&counts, huffman_table)
+        estimate_huffman_bit_cost(counts, huffman_table)
     } else {
         None
     };
 
     let mut candidate_table = HuffmanEncodeTable::new();
-    build_huffman_encode_table(&counts, &mut candidate_table)?;
+    build_huffman_encode_table(counts, &mut candidate_table)?;
     let candidate_bit_cost =
-        estimate_huffman_bit_cost(&counts, &candidate_table).ok_or(EncodeError::TableNotUsable)?;
+        estimate_huffman_bit_cost(counts, &candidate_table).ok_or(EncodeError::TableNotUsable)?;
 
     let mut table_description_scratch = [0u8; 512];
     let candidate_table_bytes = write_huffman_table(
@@ -126,10 +173,17 @@ fn write_compressed_literals(
         weight_fse_table,
     )?;
 
+    let table_is_too_large =
+        allow_quick_raw && candidate_table_bytes + TABLE_OVERHEAD >= input.len();
     let use_treeless = match treeless_bit_cost {
-        Some(treeless_bits) => treeless_bits < candidate_bit_cost + candidate_table_bytes * 8,
+        Some(treeless_bits) => {
+            table_is_too_large || treeless_bits < candidate_bit_cost + candidate_table_bytes * 8
+        }
         None => false,
     };
+    if !use_treeless && table_is_too_large {
+        return Err(EncodeError::TableNotUsable);
+    }
 
     let regenerated_size = input.len();
     let stream_count = pick_stream_count(regenerated_size);
@@ -329,6 +383,12 @@ mod tests {
         }
     }
 
+    const TEST_HINTS: LiteralsHints<'static> = LiteralsHints {
+        known_counts: None,
+        sequence_count: 0,
+        allow_quick_raw: true,
+    };
+
     fn repeating_text(length: usize) -> Vec<u8> {
         let source = b"the quick brown fox jumps over the lazy dog while the sun sets slowly \
 behind the distant hills and the wind carries the scent of rain across the quiet valley";
@@ -352,7 +412,7 @@ behind the distant hills and the wind carries the scent of rain across the quiet
             &mut huffman_encode_table,
             &mut weight_fse_table,
             false,
-            None,
+            TEST_HINTS,
         )
         .unwrap();
 
@@ -402,7 +462,7 @@ behind the distant hills and the wind carries the scent of rain across the quiet
             &mut huffman_encode_table,
             &mut weight_fse_table,
             false,
-            None,
+            TEST_HINTS,
         )
         .unwrap();
 
@@ -430,7 +490,7 @@ behind the distant hills and the wind carries the scent of rain across the quiet
             &mut huffman_encode_table,
             &mut weight_fse_table,
             false,
-            None,
+            TEST_HINTS,
         )
         .unwrap();
         let header = read_literals_header(&output[..bytes_written]).unwrap();
@@ -457,7 +517,7 @@ behind the distant hills and the wind carries the scent of rain across the quiet
             &mut huffman_encode_table,
             &mut weight_fse_table,
             false,
-            None,
+            TEST_HINTS,
         )
         .unwrap();
         let header = read_literals_header(&output[..bytes_written]).unwrap();

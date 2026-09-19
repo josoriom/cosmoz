@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 use crate::block::block_splitter;
 use crate::{
     block::{
-        literals_writer::write_literals,
+        literals_writer::{LiteralsHints, write_literals},
         sequence_record::SequenceRecord,
         sequence_writer::{SequenceEncodeTables, write_sequences},
     },
@@ -13,7 +13,7 @@ use crate::{
     encoder::EncodeWorkspace,
     entropy::huffman_encode_table::HuffmanEncodeTable,
     frame::{block_header::BlockType, frame_writer::write_block_header},
-    levels::MatchFinder,
+    levels::{MatchFinder, level_table::Strategy},
 };
 
 #[cfg(feature = "compression")]
@@ -148,6 +148,7 @@ fn commit_single_block(
     saved_sequence_tables: SequenceEncodeTables,
     literal_counts: Option<&[u32; 256]>,
 ) -> Result<usize, EncodeError> {
+    let allow_quick_raw = workspace.level_parameters.strategy == Strategy::Fast;
     let compressed_body_length = write_compressed_block_body(
         &workspace.literals[..literal_count],
         &workspace.sequences[..sequence_count],
@@ -157,6 +158,7 @@ fn commit_single_block(
         &mut workspace.sequence_tables,
         table_reuse_allowed,
         literal_counts,
+        allow_quick_raw,
     );
 
     match compressed_body_length {
@@ -238,6 +240,7 @@ fn write_block_as_split_pieces(
             true
         };
 
+        let allow_quick_raw = workspace.level_parameters.strategy == Strategy::Fast;
         let body_length = write_compressed_block_body(
             &workspace.literals[piece_literal_start..piece_literal_end],
             &workspace.sequences[sequence_start..sequence_end],
@@ -247,6 +250,7 @@ fn write_block_as_split_pieces(
             &mut workspace.sequence_tables,
             piece_table_reuse_allowed,
             piece_literal_counts[piece_index].as_ref(),
+            allow_quick_raw,
         );
 
         let body_length = match body_length {
@@ -365,14 +369,20 @@ fn write_compressed_block_body(
     sequence_tables: &mut SequenceEncodeTables,
     table_reuse_allowed: bool,
     literal_counts: Option<&[u32; 256]>,
+    allow_quick_raw: bool,
 ) -> Result<usize, EncodeError> {
+    let hints = LiteralsHints {
+        known_counts: literal_counts,
+        sequence_count: sequences.len(),
+        allow_quick_raw,
+    };
     let literals_length = write_literals(
         literals,
         output,
         huffman_table,
         weight_fse_table,
         table_reuse_allowed,
-        literal_counts,
+        hints,
     )?;
     let sequences_output = output
         .get_mut(literals_length..)

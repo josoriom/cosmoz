@@ -12,7 +12,6 @@ use level_table::LevelParameters;
 #[cfg(feature = "compression")]
 use level_table::Strategy;
 
-pub(crate) const MIN_MATCH: usize = 4;
 pub(crate) const MAX_OFFSET_LOG: u8 = 22;
 
 pub(crate) trait MatchFinder {
@@ -41,7 +40,7 @@ pub(crate) enum AnyFinder<'tables> {
 
 impl AnyFinder<'static> {
     pub(crate) const fn for_level(level_parameters: LevelParameters) -> Self {
-        AnyFinder::Fast(FastFinder::new(level_parameters.window_log))
+        AnyFinder::Fast(FastFinder::new(level_parameters))
     }
 }
 
@@ -65,7 +64,7 @@ impl<'tables> AnyFinder<'tables> {
                 storage.chain_table,
                 level_parameters,
             )),
-            Strategy::Fast => AnyFinder::Fast(FastFinder::new(level_parameters.window_log)),
+            Strategy::Fast => AnyFinder::Fast(FastFinder::new(level_parameters)),
         }
     }
 
@@ -75,7 +74,7 @@ impl<'tables> AnyFinder<'tables> {
         level_parameters: LevelParameters,
         _storage: TableStorage<'tables>,
     ) -> Self {
-        AnyFinder::Fast(FastFinder::new(level_parameters.window_log))
+        AnyFinder::Fast(FastFinder::new(level_parameters))
     }
 }
 

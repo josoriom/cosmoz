@@ -2,7 +2,9 @@ use crate::{
     bits::backward_bit_writer::BackwardBitWriter,
     block::{
         sequence_codes::{
-            LITERAL_LENGTH_CODE_COUNT, MATCH_LENGTH_CODE_COUNT, OFFSET_CODE_COUNT,
+            LITERAL_LENGTH_CODE_COUNT, LITERAL_LENGTH_EXTRA_BITS, MATCH_LENGTH_CODE_COUNT,
+            MATCH_LENGTH_EXTRA_BITS, MIN_MATCH_LENGTH, OFFSET_CODE_COUNT,
+            find_literal_length_code, find_match_length_code, find_offset_code,
             get_literal_length_code, get_literal_length_extra_bits, get_match_length_code,
             get_match_length_extra_bits, get_offset_code,
         },
@@ -90,12 +92,9 @@ pub(crate) fn write_sequences(
     let mut match_length_counts = [0u32; MATCH_LENGTH_CODE_COUNT];
 
     for record in sequences {
-        let (literal_length_code, _) = get_literal_length_code(record.literal_length);
-        let (match_length_code, _) = get_match_length_code(record.match_length);
-        let (offset_code, _) = get_offset_code(record.offset_value);
-        literal_length_counts[literal_length_code as usize] += 1;
-        offset_counts[offset_code as usize] += 1;
-        match_length_counts[match_length_code as usize] += 1;
+        literal_length_counts[find_literal_length_code(record.literal_length) as usize] += 1;
+        offset_counts[find_offset_code(record.offset_value) as usize] += 1;
+        match_length_counts[find_match_length_code(record.match_length) as usize] += 1;
     }
 
     let (literal_length_mode, _) = pick_table_mode(
@@ -376,32 +375,34 @@ fn write_one_stream(
     )?;
     writer.add_bits(last_offset_extra as u64, last_offset_code as usize)?;
 
-    for position in (0..count - 1).rev() {
-        let record = sequences[position];
-        let (literal_length_code, literal_length_extra) =
-            get_literal_length_code(record.literal_length);
-        let (match_length_code, match_length_extra) = get_match_length_code(record.match_length);
-        let (offset_code, offset_extra) = get_offset_code(record.offset_value);
-
-        offset_state.encode_symbol(&mut writer, &tables.offset, offset_code)?;
-        match_length_state.encode_symbol(&mut writer, &tables.match_length, match_length_code)?;
-        literal_length_state.encode_symbol(
+    for record in sequences[..count - 1].iter().rev() {
+        let literal_length_code = find_literal_length_code(record.literal_length);
+        let match_length_code = find_match_length_code(record.match_length);
+        let offset_code = find_offset_code(record.offset_value);
+        offset_state.encode_symbol_without_flush(&mut writer, &tables.offset, offset_code);
+        match_length_state.encode_symbol_without_flush(
+            &mut writer,
+            &tables.match_length,
+            match_length_code,
+        );
+        literal_length_state.encode_symbol_without_flush(
             &mut writer,
             &tables.literal_length,
             literal_length_code,
-        )?;
-
-        writer.add_bits(
-            literal_length_extra as u64,
-            get_literal_length_extra_bits(literal_length_code) as usize,
-        )?;
-        writer.add_bits(
-            match_length_extra as u64,
-            get_match_length_extra_bits(match_length_code) as usize,
-        )?;
-        writer.add_bits(offset_extra as u64, offset_code as usize)?;
+        );
+        writer.flush_whole_bytes();
+        writer.add_bits_without_flush(
+            record.literal_length as u64,
+            LITERAL_LENGTH_EXTRA_BITS[literal_length_code as usize] as usize,
+        );
+        writer.add_bits_without_flush(
+            (record.match_length - MIN_MATCH_LENGTH) as u64,
+            MATCH_LENGTH_EXTRA_BITS[match_length_code as usize] as usize,
+        );
+        writer.flush_whole_bytes();
+        writer.add_bits_without_flush(record.offset_value as u64, offset_code as usize);
     }
-
+    writer.flush_whole_bytes();
     match_length_state.flush(&mut writer, &tables.match_length)?;
     offset_state.flush(&mut writer, &tables.offset)?;
     literal_length_state.flush(&mut writer, &tables.literal_length)?;

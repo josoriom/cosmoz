@@ -5,6 +5,7 @@ pub(crate) struct ForwardBitWriter<'output> {
     container: u64,
     bits_in_container: usize,
     position: usize,
+    has_overflowed: bool,
 }
 
 impl<'output> ForwardBitWriter<'output> {
@@ -14,6 +15,7 @@ impl<'output> ForwardBitWriter<'output> {
             container: 0,
             bits_in_container: 0,
             position: 0,
+            has_overflowed: false,
         }
     }
 
@@ -51,7 +53,31 @@ impl<'output> ForwardBitWriter<'output> {
         Ok(())
     }
 
+    #[inline(always)]
+    pub(crate) fn add_bits_without_flush(&mut self, value: u64, count: usize) {
+        debug_assert!(self.bits_in_container + count <= 64);
+        let bits = mask_to_bit_count(value, count);
+        self.container |= bits.wrapping_shl(self.bits_in_container as u32);
+        self.bits_in_container += count;
+    }
+
+    #[inline(always)]
+    pub(crate) fn flush_whole_bytes(&mut self) {
+        let Some(destination) = self.output.get_mut(self.position..self.position + 8) else {
+            self.has_overflowed |= self.flush_bytes().is_err();
+            return;
+        };
+        destination.copy_from_slice(&self.container.to_le_bytes());
+        let bits_written = self.bits_in_container & !7;
+        self.position += bits_written / 8;
+        self.container = shift_right_by_bits(self.container, bits_written);
+        self.bits_in_container -= bits_written;
+    }
+
     pub(crate) fn finish(mut self) -> Result<usize, EncodeError> {
+        if self.has_overflowed {
+            return Err(EncodeError::OutputTooSmall);
+        }
         self.flush_bytes()?;
         if self.bits_in_container > 0 {
             let destination = self

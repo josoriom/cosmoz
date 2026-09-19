@@ -1,47 +1,71 @@
-use crate::levels::{MIN_MATCH, MatchFinder};
 use crate::{
-    block::{
-        repeat_offsets::RepeatOffsets, sequence_codes::MAX_MATCH_LENGTH,
-        sequence_record::SequenceRecord,
+    block::{repeat_offsets::RepeatOffsets, sequence_record::SequenceRecord},
+    levels::{
+        MatchFinder,
+        level_table::{self, LevelParameters},
     },
-    simd::count_matching_bytes::count_matching_bytes_unchecked,
+    simd::count_matching_bytes::count_matching_bytes_by_words_unchecked,
 };
 
-pub(crate) const HASH_LOG: usize = 16;
-pub(crate) const HASH_TABLE_SIZE: usize = 1 << HASH_LOG;
+pub(crate) const MAX_HASH_LOG: usize = 15;
+pub(crate) const HASH_TABLE_SIZE: usize = 1 << MAX_HASH_LOG;
 
-const HASH_MULTIPLIER: u64 = 227_718_039_650_203;
-const HASHED_BYTE_SHIFT: u32 = 16;
-const HASH_READ_SIZE: usize = 8;
-const SKIP_SHIFT: usize = 6;
-const MIN_STEP: usize = 2;
+const READ_SIZE: usize = 8;
+const SHORTEST_MATCH: usize = 4;
+const FIRST_STEP: usize = 2;
+const STEP_GROWTH_DISTANCE: usize = 128;
+
+const PRIME_FOUR_BYTES: u32 = 2_654_435_761;
+const PRIME_FIVE_BYTES: u64 = 889_523_592_379;
+const PRIME_SIX_BYTES: u64 = 227_718_039_650_203;
+const PRIME_SEVEN_BYTES: u64 = 58_295_818_150_454_627;
 
 pub(crate) struct FastFinder {
     pub positions: [u32; HASH_TABLE_SIZE],
-    pub window_log: u8,
-    base: u32,
+    window_log: u8,
+    hash_log: u32,
+    hashed_bytes: usize,
+    first_index: u32,
     last_input_length: usize,
 }
 
+struct FoundMatch {
+    start: usize,
+    source: usize,
+    known_length: usize,
+    is_repeat: bool,
+}
+
 impl FastFinder {
-    pub(crate) const fn new(window_log: u8) -> Self {
+    pub(crate) const fn new(parameters: LevelParameters) -> Self {
         FastFinder {
             positions: [0; HASH_TABLE_SIZE],
-            window_log,
-            base: 0,
+            window_log: parameters.window_log,
+            hash_log: get_hash_log(parameters),
+            hashed_bytes: get_hashed_bytes(parameters),
+            first_index: 1,
             last_input_length: 0,
         }
+    }
+
+    fn use_parameters(&mut self, parameters: LevelParameters) {
+        self.window_log = parameters.window_log;
+        self.hash_log = get_hash_log(parameters);
+        self.hashed_bytes = get_hashed_bytes(parameters);
     }
 }
 
 impl MatchFinder for FastFinder {
     fn reset(&mut self, input_length: usize) {
-        let next_base = self.base as usize + self.last_input_length + 1;
-        if next_base + input_length >= u32::MAX as usize {
+        self.use_parameters(level_table::get_level_one_parameters_for_input_length(
+            input_length,
+        ));
+        let next_first_index = self.first_index as usize + self.last_input_length + 1;
+        if next_first_index + input_length >= u32::MAX as usize {
             self.positions.fill(0);
-            self.base = 0;
+            self.first_index = 1;
         } else {
-            self.base = next_base as u32;
+            self.first_index = next_first_index as u32;
         }
         self.last_input_length = input_length;
     }
@@ -60,201 +84,370 @@ impl MatchFinder for FastFinder {
         debug_assert!(block_start <= input.len());
 
         let block_length = input.len() - block_start;
-
-        if input.len() > u32::MAX as usize || sequences.is_empty() || block_length < MIN_MATCH {
-            return (0, block_length);
-        }
-
-        if input.len() < HASH_READ_SIZE + 1 {
-            return (0, block_length);
-        }
-
-        let scan_limit = input.len() - (HASH_READ_SIZE + 1);
-
-        if block_start > scan_limit {
+        if input.len() > u32::MAX as usize || block_length <= READ_SIZE {
             return (0, block_length);
         }
 
         unsafe {
-            self.find_sequences_unchecked(input, block_start, scan_limit, sequences, repeat_offsets)
+            match self.hashed_bytes {
+                5 => self.search::<5>(input, block_start, sequences, repeat_offsets),
+                6 => self.search::<6>(input, block_start, sequences, repeat_offsets),
+                7 => self.search::<7>(input, block_start, sequences, repeat_offsets),
+                _ => self.search::<4>(input, block_start, sequences, repeat_offsets),
+            }
         }
     }
 }
 
 impl FastFinder {
-    unsafe fn find_sequences_unchecked(
+    #[inline(always)]
+    unsafe fn search<const HASHED_BYTES: usize>(
         &mut self,
         input: &[u8],
         block_start: usize,
-        scan_limit: usize,
         sequences: &mut [SequenceRecord],
         repeat_offsets: &mut RepeatOffsets,
     ) -> (usize, usize) {
-        debug_assert!(block_start <= input.len());
-        debug_assert!(input.len() > HASH_READ_SIZE);
-        debug_assert!(scan_limit == input.len() - (HASH_READ_SIZE + 1));
-        debug_assert!(block_start <= scan_limit);
-
         let window_size = 1usize << self.window_log;
+        let input_end = input.len();
+        let search_end = input_end - READ_SIZE;
+        let window_start = input_end.saturating_sub(window_size);
 
-        let mut position = block_start;
-        let mut literal_start = block_start;
-        let mut sequence_count = 0usize;
+        let mut table = PositionTable::<HASHED_BYTES> {
+            positions: &mut self.positions,
+            hash_log: self.hash_log,
+            first_index: self.first_index,
+        };
 
-        while position <= scan_limit && sequence_count < sequences.len() {
-            let next_position = position + 1;
+        let mut position = block_start + (block_start == window_start) as usize;
+        let largest_repeat = position.min(window_size);
+        let mut repeats = Repeats {
+            first: allow_repeat(repeat_offsets.first, largest_repeat),
+            second: allow_repeat(repeat_offsets.second, largest_repeat),
+        };
+        let mut list = SequenceList {
+            sequences,
+            count: 0,
+            literal_start: block_start,
+            repeat_offsets,
+        };
 
-            let value0 = unsafe { read_eight_bytes_unchecked(input, position) };
-            let value1 = unsafe { read_eight_bytes_unchecked(input, next_position) };
+        'search: while !list.is_full() {
+            let mut step = FIRST_STEP;
+            let mut next_step_position = position + STEP_GROWTH_DISTANCE;
+            let mut next_position = position + 1;
+            let mut far_position = position + step;
+            let mut far_next_position = far_position + 1;
+            if far_next_position >= search_end {
+                break;
+            }
 
-            let hash0 = hash_table_index(value0, HASH_LOG as u32);
-            let hash1 = hash_table_index(value1, HASH_LOG as u32);
+            let mut hash = unsafe { table.get_hash(input, position) };
+            let mut next_hash = unsafe { table.get_hash(input, next_position) };
+            let mut candidate = unsafe { table.get_candidate(hash) };
+            let mut last_saved_position;
 
-            let candidate0 = self.positions[hash0].wrapping_sub(self.base);
-            let candidate1 = self.positions[hash1].wrapping_sub(self.base);
+            let found = loop {
+                last_saved_position = position;
+                unsafe { table.save_position(hash, position) };
 
-            self.positions[hash0] = position as u32 + 1 + self.base;
-            self.positions[hash1] = next_position as u32 + 1 + self.base;
+                if repeats.first > 0
+                    && unsafe { read_four_bytes(input, far_position) }
+                        == unsafe { read_four_bytes(input, far_position - repeats.first) }
+                {
+                    unsafe { table.save_position(next_hash, next_position) };
+                    break unsafe { extend_repeat_backward(input, far_position, repeats.first) };
+                }
 
-            let repeat_offset = repeat_offsets.first as usize;
+                if unsafe { is_match(input, position, candidate, window_start) } {
+                    unsafe { table.save_position(next_hash, next_position) };
+                    break unsafe {
+                        extend_backward(
+                            input,
+                            position,
+                            candidate,
+                            list.literal_start,
+                            window_start,
+                        )
+                    };
+                }
 
-            let found = unsafe {
-                candidate_match_unchecked(
-                    input,
-                    position,
-                    value0,
-                    candidate0,
-                    repeat_offset,
-                    window_size,
-                )
-                .or_else(|| {
-                    candidate_match_unchecked(
-                        input,
-                        next_position,
-                        value1,
-                        candidate1,
-                        repeat_offset,
-                        window_size,
-                    )
-                })
-            };
+                candidate = unsafe { table.get_candidate(next_hash) };
+                hash = next_hash;
+                next_hash = unsafe { table.get_hash(input, far_position) };
+                position = next_position;
+                next_position = far_position;
+                far_position = far_next_position;
 
-            let (matched_position, matched_source) = match found {
-                Some(pair) => pair,
-                None => {
-                    let step = skip_step(position, literal_start).max(MIN_STEP);
-                    position += step;
-                    continue;
+                last_saved_position = position;
+                unsafe { table.save_position(hash, position) };
+
+                if unsafe { is_match(input, position, candidate, window_start) } {
+                    if step <= SHORTEST_MATCH {
+                        unsafe { table.save_position(next_hash, next_position) };
+                    }
+                    break unsafe {
+                        extend_backward(
+                            input,
+                            position,
+                            candidate,
+                            list.literal_start,
+                            window_start,
+                        )
+                    };
+                }
+
+                candidate = unsafe { table.get_candidate(next_hash) };
+                hash = next_hash;
+                next_hash = unsafe { table.get_hash(input, far_position) };
+                position = next_position;
+                next_position = far_position;
+                far_position = position + step;
+                far_next_position = next_position + step;
+
+                if far_position >= next_step_position {
+                    step += 1;
+                    next_step_position += STEP_GROWTH_DISTANCE;
+                }
+                if far_next_position >= search_end {
+                    break 'search;
                 }
             };
 
-            let mut match_start = matched_position;
-            let mut source_start = matched_source;
-
-            while match_start > literal_start
-                && source_start > 0
-                && unsafe { read_byte_unchecked(input, match_start - 1) }
-                    == unsafe { read_byte_unchecked(input, source_start - 1) }
-            {
-                match_start -= 1;
-                source_start -= 1;
+            if !found.is_repeat {
+                repeats.use_new_offset(found.start - found.source);
             }
+            let match_length = found.known_length
+                + unsafe {
+                    count_matching_bytes(
+                        input,
+                        found.source + found.known_length,
+                        found.start + found.known_length,
+                    )
+                };
+            list.add(found.start, found.source, match_length);
+            position = found.start + match_length;
 
-            let remaining = input.len() - match_start;
-            let match_length = unsafe {
-                count_matching_bytes_unchecked(
-                    input.as_ptr().add(source_start),
-                    input.as_ptr().add(match_start),
-                    remaining,
-                )
-            };
-            debug_assert!(match_length >= MIN_MATCH);
-            debug_assert!(match_length <= MAX_MATCH_LENGTH as usize);
-
-            let literal_length = (match_start - literal_start) as u32;
-            let offset = (match_start - source_start) as u32;
-            let offset_value = repeat_offsets.get_offset_value(offset, literal_length);
-
-            sequences[sequence_count] = SequenceRecord {
-                literal_length,
-                match_length: match_length as u32,
-                offset_value,
-            };
-            sequence_count += 1;
-
-            let match_end = match_start + match_length;
-            self.insert_positions_after_match(input, match_end, scan_limit);
-
-            position = match_end;
-            literal_start = match_end;
+            if position <= search_end {
+                unsafe {
+                    table.save_position_at(input, last_saved_position + 2);
+                    table.save_position_at(input, position - 2);
+                    position = add_second_repeats(
+                        input,
+                        &mut table,
+                        &mut list,
+                        &mut repeats,
+                        position,
+                        search_end,
+                    );
+                }
+            }
         }
 
-        let tail_literal_count = input.len() - literal_start;
-        (sequence_count, tail_literal_count)
-    }
-
-    fn insert_positions_after_match(&mut self, input: &[u8], match_end: usize, scan_limit: usize) {
-        let insert_base = match_end.saturating_sub(2);
-
-        let mut offset = 0usize;
-        while offset < 2 {
-            let position = insert_base + offset;
-            if position > scan_limit {
-                break;
-            }
-            let hash = unsafe { hash_position_unchecked(input, position) };
-            self.positions[hash] = position as u32 + 1 + self.base;
-            offset += 1;
-        }
+        (list.count, input_end - list.literal_start)
     }
 }
 
-unsafe fn candidate_match_unchecked(
+struct Repeats {
+    first: usize,
+    second: usize,
+}
+
+impl Repeats {
+    #[inline(always)]
+    fn use_new_offset(&mut self, offset: usize) {
+        self.second = self.first;
+        self.first = offset;
+    }
+
+    #[inline(always)]
+    fn swap(&mut self) {
+        core::mem::swap(&mut self.first, &mut self.second);
+    }
+}
+
+struct SequenceList<'list> {
+    sequences: &'list mut [SequenceRecord],
+    count: usize,
+    literal_start: usize,
+    repeat_offsets: &'list mut RepeatOffsets,
+}
+
+impl SequenceList<'_> {
+    #[inline(always)]
+    fn is_full(&self) -> bool {
+        self.count == self.sequences.len()
+    }
+
+    #[inline(always)]
+    fn add(&mut self, start: usize, source: usize, match_length: usize) {
+        let literal_length = (start - self.literal_start) as u32;
+        let offset = (start - source) as u32;
+        self.sequences[self.count] = SequenceRecord {
+            literal_length,
+            match_length: match_length as u32,
+            offset_value: self.repeat_offsets.get_offset_value(offset, literal_length),
+        };
+        self.count += 1;
+        self.literal_start = start + match_length;
+    }
+}
+
+#[inline(always)]
+unsafe fn add_second_repeats<const HASHED_BYTES: usize>(
+    input: &[u8],
+    table: &mut PositionTable<'_, HASHED_BYTES>,
+    list: &mut SequenceList<'_>,
+    repeats: &mut Repeats,
+    mut position: usize,
+    search_end: usize,
+) -> usize {
+    while repeats.second > 0
+        && position <= search_end
+        && !list.is_full()
+        && unsafe { read_four_bytes(input, position) }
+            == unsafe { read_four_bytes(input, position - repeats.second) }
+    {
+        let source = position - repeats.second;
+        let match_length = SHORTEST_MATCH
+            + unsafe {
+                count_matching_bytes(input, source + SHORTEST_MATCH, position + SHORTEST_MATCH)
+            };
+        repeats.swap();
+        unsafe { table.save_position_at(input, position) };
+        list.add(position, source, match_length);
+        position += match_length;
+    }
+    position
+}
+
+struct PositionTable<'table, const HASHED_BYTES: usize> {
+    positions: &'table mut [u32; HASH_TABLE_SIZE],
+    hash_log: u32,
+    first_index: u32,
+}
+
+impl<const HASHED_BYTES: usize> PositionTable<'_, HASHED_BYTES> {
+    #[inline(always)]
+    unsafe fn get_hash(&self, input: &[u8], position: usize) -> usize {
+        if HASHED_BYTES == 4 {
+            let value = unsafe { read_four_bytes(input, position) };
+            return (value.wrapping_mul(PRIME_FOUR_BYTES) >> (32 - self.hash_log)) as usize;
+        }
+        let value = unsafe { read_eight_bytes(input, position) };
+        let (shift, prime) = match HASHED_BYTES {
+            5 => (24, PRIME_FIVE_BYTES),
+            6 => (16, PRIME_SIX_BYTES),
+            _ => (8, PRIME_SEVEN_BYTES),
+        };
+        ((value << shift).wrapping_mul(prime) >> (64 - self.hash_log)) as usize
+    }
+
+    #[inline(always)]
+    unsafe fn get_candidate(&self, hash: usize) -> usize {
+        debug_assert!(hash < HASH_TABLE_SIZE);
+        let stored = unsafe { *self.positions.get_unchecked(hash) };
+        stored.wrapping_sub(self.first_index) as usize
+    }
+
+    #[inline(always)]
+    unsafe fn save_position_at(&mut self, input: &[u8], position: usize) {
+        let hash = unsafe { self.get_hash(input, position) };
+        unsafe { self.save_position(hash, position) };
+    }
+
+    #[inline(always)]
+    unsafe fn save_position(&mut self, hash: usize, position: usize) {
+        debug_assert!(hash < HASH_TABLE_SIZE);
+        let stored = position as u32 + self.first_index;
+        unsafe { *self.positions.get_unchecked_mut(hash) = stored };
+    }
+}
+
+const fn get_hash_log(parameters: LevelParameters) -> u32 {
+    if parameters.hash_log as usize > MAX_HASH_LOG {
+        MAX_HASH_LOG as u32
+    } else {
+        parameters.hash_log as u32
+    }
+}
+
+const fn get_hashed_bytes(parameters: LevelParameters) -> usize {
+    match parameters.min_match {
+        0..=4 => 4,
+        5 => 5,
+        6 => 6,
+        _ => 7,
+    }
+}
+
+fn allow_repeat(offset: u32, largest_repeat: usize) -> usize {
+    if offset as usize <= largest_repeat {
+        offset as usize
+    } else {
+        0
+    }
+}
+
+#[inline(always)]
+unsafe fn is_match(input: &[u8], position: usize, candidate: usize, window_start: usize) -> bool {
+    let is_inside_window = candidate.wrapping_sub(window_start) < position - window_start;
+    is_inside_window
+        && unsafe { read_four_bytes(input, candidate) == read_four_bytes(input, position) }
+}
+
+#[inline(always)]
+unsafe fn extend_repeat_backward(input: &[u8], position: usize, repeat: usize) -> FoundMatch {
+    let step_back =
+        unsafe { read_byte(input, position - 1) == read_byte(input, position - 1 - repeat) }
+            as usize;
+    let start = position - step_back;
+    FoundMatch {
+        start,
+        source: start - repeat,
+        known_length: SHORTEST_MATCH + step_back,
+        is_repeat: true,
+    }
+}
+
+#[inline(always)]
+unsafe fn extend_backward(
     input: &[u8],
     position: usize,
-    value: u64,
-    candidate: u32,
-    repeat_offset: usize,
-    window_size: usize,
-) -> Option<(usize, usize)> {
-    debug_assert!(position + 4 <= input.len());
-
-    let low_four_bytes = value as u32;
-
-    if repeat_offset != 0 && position >= repeat_offset {
-        let source = position - repeat_offset;
-        if low_four_bytes == unsafe { read_four_bytes_unchecked(input, source) } {
-            return Some((position, source));
-        }
+    candidate: usize,
+    literal_start: usize,
+    window_start: usize,
+) -> FoundMatch {
+    let mut start = position;
+    let mut source = candidate;
+    while start > literal_start
+        && source > window_start
+        && unsafe { read_byte(input, start - 1) == read_byte(input, source - 1) }
+    {
+        start -= 1;
+        source -= 1;
     }
-
-    if candidate != 0 {
-        let candidate_position = (candidate - 1) as usize;
-        if candidate_position < position
-            && position - candidate_position <= window_size
-            && low_four_bytes == unsafe { read_four_bytes_unchecked(input, candidate_position) }
-        {
-            return Some((position, candidate_position));
-        }
+    FoundMatch {
+        start,
+        source,
+        known_length: SHORTEST_MATCH + position - start,
+        is_repeat: false,
     }
-
-    None
 }
 
-fn skip_step(position: usize, literal_start: usize) -> usize {
-    1 + ((position - literal_start) >> SKIP_SHIFT)
+#[inline(always)]
+unsafe fn count_matching_bytes(input: &[u8], source: usize, position: usize) -> usize {
+    unsafe {
+        count_matching_bytes_by_words_unchecked(
+            input.as_ptr().add(source),
+            input.as_ptr().add(position),
+            input.len() - position,
+        )
+    }
 }
 
-fn hash_table_index(value: u64, hash_log: u32) -> usize {
-    ((value << HASHED_BYTE_SHIFT).wrapping_mul(HASH_MULTIPLIER) >> (64 - hash_log)) as usize
-}
-
-unsafe fn hash_position_unchecked(input: &[u8], position: usize) -> usize {
-    let value = unsafe { read_eight_bytes_unchecked(input, position) };
-    hash_table_index(value, HASH_LOG as u32)
-}
-
-unsafe fn read_eight_bytes_unchecked(input: &[u8], position: usize) -> u64 {
+#[inline(always)]
+unsafe fn read_eight_bytes(input: &[u8], position: usize) -> u64 {
     debug_assert!(position + 8 <= input.len());
     unsafe {
         u64::from_le(core::ptr::read_unaligned(
@@ -263,7 +456,8 @@ unsafe fn read_eight_bytes_unchecked(input: &[u8], position: usize) -> u64 {
     }
 }
 
-unsafe fn read_four_bytes_unchecked(input: &[u8], position: usize) -> u32 {
+#[inline(always)]
+unsafe fn read_four_bytes(input: &[u8], position: usize) -> u32 {
     debug_assert!(position + 4 <= input.len());
     unsafe {
         u32::from_le(core::ptr::read_unaligned(
@@ -272,7 +466,8 @@ unsafe fn read_four_bytes_unchecked(input: &[u8], position: usize) -> u32 {
     }
 }
 
-unsafe fn read_byte_unchecked(input: &[u8], position: usize) -> u8 {
+#[inline(always)]
+unsafe fn read_byte(input: &[u8], position: usize) -> u8 {
     debug_assert!(position < input.len());
     unsafe { *input.as_ptr().add(position) }
 }
@@ -297,6 +492,20 @@ mod tests {
         }
         bytes.truncate(length);
         bytes
+    }
+
+    fn get_finder_for_input(input_length: usize) -> FastFinder {
+        let mut finder = FastFinder::new(level_table::level_one_parameters());
+        finder.reset(input_length);
+        finder
+    }
+
+    fn get_finder_with_window_log(window_log: u8) -> FastFinder {
+        let parameters = LevelParameters {
+            window_log,
+            ..level_table::level_one_parameters()
+        };
+        FastFinder::new(parameters)
     }
 
     fn resolve_and_verify_sequences(
@@ -337,26 +546,74 @@ mod tests {
         )
     }
 
+    fn get_fuzz_input(case: u32, seed: u32) -> Vec<u8> {
+        let length = 200 + (case as usize % 3000);
+        match case % 4 {
+            0 => generate_pseudo_random_bytes(length, seed),
+            1 => {
+                let words = [
+                    b"the quick brown fox jumps".as_slice(),
+                    b"over the lazy dog again and again ".as_slice(),
+                    b"pack my box with five dozen liquor jugs ".as_slice(),
+                ];
+                let mut bytes = Vec::with_capacity(length);
+                let mut index = 0usize;
+                while bytes.len() < length {
+                    bytes.extend_from_slice(words[index % words.len()]);
+                    index += 1;
+                }
+                bytes.truncate(length);
+                bytes
+            }
+            2 => {
+                let pattern = generate_pseudo_random_bytes(1 + (case as usize % 11), seed);
+                let mut bytes = Vec::with_capacity(length);
+                while bytes.len() < length {
+                    bytes.extend_from_slice(&pattern);
+                }
+                bytes.truncate(length);
+                bytes
+            }
+            _ => {
+                let mut bytes = Vec::with_capacity(length);
+                let mut run_state = seed;
+                while bytes.len() < length {
+                    let run_length = 1 + (next_pseudo_random_number(&mut run_state) % 40) as usize;
+                    let byte = (next_pseudo_random_number(&mut run_state) & 0xFF) as u8;
+                    for _ in 0..run_length.min(length - bytes.len()) {
+                        bytes.push(byte);
+                    }
+                }
+                bytes
+            }
+        }
+    }
+
     #[test]
     fn finds_repeating_pattern_matches() {
-        let pattern = b"abc";
         let mut input = Vec::new();
         while input.len() < 60 {
-            input.extend_from_slice(pattern);
+            input.extend_from_slice(b"abc");
         }
 
-        let mut finder = FastFinder::new(20);
+        let mut finder = get_finder_for_input(input.len());
         let mut repeat_offsets = RepeatOffsets::new();
+        let mut decoder_history = RepeatOffsets::new();
         let mut sequences = [SequenceRecord::default(); 8];
 
         let (sequence_count, tail_literal_count) =
             finder.find_sequences(&input, 0, &mut sequences, &mut repeat_offsets);
 
         assert_eq!(sequence_count, 1);
-        assert_eq!(tail_literal_count, 0);
-        assert_eq!(sequences[0].literal_length, 3);
-        assert_eq!(sequences[0].match_length, 57);
-        assert_eq!(sequences[0].offset_value, 6);
+        let (_, covered, resolved_offsets) = resolve_and_verify_sequences(
+            &input,
+            0,
+            &sequences[..sequence_count],
+            &mut decoder_history,
+        );
+        assert_eq!(covered + tail_literal_count, input.len());
+        assert_eq!(resolved_offsets, vec![3]);
+        assert!(sequences[0].match_length >= 50);
     }
 
     #[test]
@@ -368,7 +625,7 @@ mod tests {
         }
         input.truncate(100_000);
 
-        let mut finder = FastFinder::new(20);
+        let mut finder = get_finder_for_input(input.len());
         let mut repeat_offsets = RepeatOffsets::new();
         let mut decoder_history = RepeatOffsets::new();
         let mut sequences = vec![SequenceRecord::default(); 4096];
@@ -376,7 +633,6 @@ mod tests {
         let first_block_input = &input[..50_000];
         let (first_sequence_count, first_tail_literal_count) =
             finder.find_sequences(first_block_input, 0, &mut sequences, &mut repeat_offsets);
-
         let (_, first_covered, _) = resolve_and_verify_sequences(
             first_block_input,
             0,
@@ -385,14 +641,12 @@ mod tests {
         );
         assert_eq!(first_covered + first_tail_literal_count, 50_000);
 
-        let mut second_sequences = vec![SequenceRecord::default(); 4096];
         let (second_sequence_count, second_tail_literal_count) =
-            finder.find_sequences(&input, 50_000, &mut second_sequences, &mut repeat_offsets);
-
+            finder.find_sequences(&input, 50_000, &mut sequences, &mut repeat_offsets);
         let (reaches_into_first_block, second_covered, _) = resolve_and_verify_sequences(
             &input,
             50_000,
-            &second_sequences[..second_sequence_count],
+            &sequences[..second_sequence_count],
             &mut decoder_history,
         );
         assert_eq!(second_covered + second_tail_literal_count, 50_000);
@@ -415,7 +669,7 @@ mod tests {
         input.extend_from_slice(b"REPEATED_TOKEN_TWO_");
         input.extend(generate_pseudo_random_bytes(20, 0x6666_6666));
 
-        let mut finder = FastFinder::new(5);
+        let mut finder = get_finder_with_window_log(5);
         let mut repeat_offsets = RepeatOffsets::new();
         let mut decoder_history = RepeatOffsets::new();
         let mut sequences = [SequenceRecord::default(); 2];
@@ -423,8 +677,7 @@ mod tests {
         let (sequence_count, tail_literal_count) =
             finder.find_sequences(&input, 0, &mut sequences, &mut repeat_offsets);
 
-        assert_eq!(sequence_count, 2);
-
+        assert!(sequence_count <= 2);
         let (_, covered, resolved_offsets) = resolve_and_verify_sequences(
             &input,
             0,
@@ -432,9 +685,8 @@ mod tests {
             &mut decoder_history,
         );
         assert_eq!(covered + tail_literal_count, input.len());
-
         for resolved_offset in resolved_offsets {
-            assert_ne!(resolved_offset, 44);
+            assert!(resolved_offset <= 32);
         }
     }
 
@@ -442,14 +694,13 @@ mod tests {
     fn random_input_is_mostly_literals_and_still_valid() {
         let input = generate_pseudo_random_bytes(64 * 1024, 0xC0FF_EE11);
 
-        let mut finder = FastFinder::new(20);
+        let mut finder = get_finder_for_input(input.len());
         let mut repeat_offsets = RepeatOffsets::new();
         let mut decoder_history = RepeatOffsets::new();
         let mut sequences = vec![SequenceRecord::default(); 4096];
 
         let (sequence_count, tail_literal_count) =
             finder.find_sequences(&input, 0, &mut sequences, &mut repeat_offsets);
-
         let (_, covered, _) = resolve_and_verify_sequences(
             &input,
             0,
@@ -461,227 +712,68 @@ mod tests {
     }
 
     #[test]
-    fn skip_ahead_still_covers_incompressible_input_exactly() {
-        let input = generate_pseudo_random_bytes(200_000, 0xFACE_FEED);
+    fn every_hashed_byte_count_covers_fuzz_shapes_exactly() {
+        let mut seed = 0x1357_9BDFu32;
+        for case in 0..500u32 {
+            let input = get_fuzz_input(case, seed ^ case);
+            seed = next_pseudo_random_number(&mut seed);
 
-        let mut finder = FastFinder::new(20);
-        let mut repeat_offsets = RepeatOffsets::new();
-        let mut decoder_history = RepeatOffsets::new();
-        let mut sequences = vec![SequenceRecord::default(); 8192];
-
-        let (sequence_count, tail_literal_count) =
-            finder.find_sequences(&input, 0, &mut sequences, &mut repeat_offsets);
-
-        let (_, covered, _) = resolve_and_verify_sequences(
-            &input,
-            0,
-            &sequences[..sequence_count],
-            &mut decoder_history,
-        );
-        assert_eq!(covered + tail_literal_count, input.len());
-    }
-
-    struct ReferenceFinder {
-        positions: std::collections::HashMap<usize, usize>,
-        window_log: u8,
-    }
-
-    impl ReferenceFinder {
-        fn new(window_log: u8) -> Self {
-            ReferenceFinder {
-                positions: std::collections::HashMap::new(),
-                window_log,
-            }
-        }
-
-        fn hash_at(input: &[u8], position: usize) -> usize {
-            let value = u64::from_le_bytes(input[position..position + 8].try_into().unwrap());
-            hash_table_index(value, HASH_LOG as u32)
-        }
-
-        fn find_sequences(
-            &mut self,
-            input: &[u8],
-            block_start: usize,
-            sequences: &mut Vec<SequenceRecord>,
-            repeat_offsets: &mut RepeatOffsets,
-        ) -> usize {
-            let window_size = 1usize << self.window_log;
-
-            if input.len() < HASH_READ_SIZE + 1 {
-                return input.len() - block_start;
-            }
-
-            let scan_limit = input.len() - (HASH_READ_SIZE + 1);
-            let mut position = block_start;
-            let mut literal_start = block_start;
-
-            while position <= scan_limit {
-                let hash = Self::hash_at(input, position);
-                let candidate = self.positions.get(&hash).copied();
-                self.positions.insert(hash, position);
-
-                let repeat_offset = repeat_offsets.first as usize;
-                let repeat_source = position.checked_sub(repeat_offset);
-
-                let source = if repeat_offset != 0
-                    && repeat_source.is_some()
-                    && input[position..position + 4]
-                        == input[repeat_source.unwrap()..repeat_source.unwrap() + 4]
-                {
-                    repeat_source
-                } else {
-                    candidate.filter(|&candidate| {
-                        candidate < position
-                            && position - candidate <= window_size
-                            && input[position..position + 4] == input[candidate..candidate + 4]
-                    })
+            for min_match in 4..=7u8 {
+                let parameters = LevelParameters {
+                    min_match,
+                    ..level_table::level_one_parameters()
                 };
+                let mut finder = FastFinder::new(parameters);
+                let mut repeat_offsets = RepeatOffsets::new();
+                let mut decoder_history = RepeatOffsets::new();
+                let mut sequences = vec![SequenceRecord::default(); input.len() / 2 + 4];
 
-                let source = match source {
-                    Some(source) => source,
-                    None => {
-                        position += 1;
-                        continue;
-                    }
-                };
-
-                let mut match_start = position;
-                let mut source_start = source;
-                while match_start > literal_start
-                    && source_start > 0
-                    && input[match_start - 1] == input[source_start - 1]
-                {
-                    match_start -= 1;
-                    source_start -= 1;
-                }
-
-                let mut match_length = 4 + (position - match_start);
-                while match_start + match_length < input.len()
-                    && input[source_start + match_length] == input[match_start + match_length]
-                {
-                    match_length += 1;
-                }
-
-                let literal_length = (match_start - literal_start) as u32;
-                let offset = (match_start - source_start) as u32;
-                let offset_value = repeat_offsets.get_offset_value(offset, literal_length);
-
-                sequences.push(SequenceRecord {
-                    literal_length,
-                    match_length: match_length as u32,
-                    offset_value,
-                });
-
-                position = match_start + match_length;
-                literal_start = position;
+                let (sequence_count, tail_literal_count) =
+                    finder.find_sequences(&input, 0, &mut sequences, &mut repeat_offsets);
+                let (_, covered, _) = resolve_and_verify_sequences(
+                    &input,
+                    0,
+                    &sequences[..sequence_count],
+                    &mut decoder_history,
+                );
+                assert_eq!(covered + tail_literal_count, input.len());
+                assert_eq!(
+                    (
+                        repeat_offsets.first,
+                        repeat_offsets.second,
+                        repeat_offsets.third
+                    ),
+                    (
+                        decoder_history.first,
+                        decoder_history.second,
+                        decoder_history.third
+                    )
+                );
             }
-
-            input.len() - literal_start
         }
     }
 
     #[test]
-    fn unchecked_finder_matches_a_reference_finder_on_fuzz_shapes() {
-        let mut random_state = 0x1357_9BDFu32;
+    fn stale_positions_from_an_earlier_input_are_never_used() {
+        let first_input = generate_pseudo_random_bytes(10_000, 0xABCD_0001);
+        let second_input = generate_pseudo_random_bytes(10_000, 0xABCD_0002);
 
-        for case in 0..500u32 {
-            let shape = case % 4;
-            let length = 200 + (case as usize % 3000);
-            let input = match shape {
-                0 => generate_pseudo_random_bytes(length, random_state ^ case),
-                1 => {
-                    let mut bytes = Vec::with_capacity(length);
-                    let words = [
-                        b"the quick brown fox jumps".as_slice(),
-                        b"over the lazy dog again and again ".as_slice(),
-                        b"pack my box with five dozen liquor jugs ".as_slice(),
-                    ];
-                    let mut index = 0usize;
-                    while bytes.len() < length {
-                        bytes.extend_from_slice(words[index % words.len()]);
-                        index += 1;
-                    }
-                    bytes.truncate(length);
-                    bytes
-                }
-                2 => {
-                    let pattern_length = 1 + (case as usize % 11);
-                    let pattern = generate_pseudo_random_bytes(pattern_length, random_state ^ case);
-                    let mut bytes = Vec::with_capacity(length);
-                    while bytes.len() < length {
-                        bytes.extend_from_slice(&pattern);
-                    }
-                    bytes.truncate(length);
-                    bytes
-                }
-                _ => {
-                    let mut bytes = Vec::with_capacity(length);
-                    let mut run_state = random_state ^ case;
-                    while bytes.len() < length {
-                        let run_length =
-                            1 + (next_pseudo_random_number(&mut run_state) % 40) as usize;
-                        let byte = (next_pseudo_random_number(&mut run_state) & 0xFF) as u8;
-                        for _ in 0..run_length {
-                            if bytes.len() >= length {
-                                break;
-                            }
-                            bytes.push(byte);
-                        }
-                    }
-                    bytes
-                }
-            };
+        let mut finder = get_finder_for_input(first_input.len());
+        let mut repeat_offsets = RepeatOffsets::new();
+        let mut sequences = vec![SequenceRecord::default(); 4096];
+        finder.find_sequences(&first_input, 0, &mut sequences, &mut repeat_offsets);
 
-            random_state = next_pseudo_random_number(&mut random_state);
-
-            let mut finder = FastFinder::new(20);
-            let mut repeat_offsets = RepeatOffsets::new();
-            let mut decoder_history = RepeatOffsets::new();
-            let mut sequences = vec![SequenceRecord::default(); input.len() / 2 + 4];
-
-            let (sequence_count, tail_literal_count) =
-                finder.find_sequences(&input, 0, &mut sequences, &mut repeat_offsets);
-            let (_, covered, _) = resolve_and_verify_sequences(
-                &input,
-                0,
-                &sequences[..sequence_count],
-                &mut decoder_history,
-            );
-            assert_eq!(covered + tail_literal_count, input.len());
-
-            let unchecked_total: usize = sequences[..sequence_count]
-                .iter()
-                .map(|sequence| sequence.literal_length as usize + sequence.match_length as usize)
-                .sum::<usize>()
-                + tail_literal_count;
-
-            let mut reference_finder = ReferenceFinder::new(20);
-            let mut reference_repeat_offsets = RepeatOffsets::new();
-            let mut reference_decoder_history = RepeatOffsets::new();
-            let mut reference_sequences = Vec::new();
-            let reference_tail = reference_finder.find_sequences(
-                &input,
-                0,
-                &mut reference_sequences,
-                &mut reference_repeat_offsets,
-            );
-            let (_, reference_covered, _) = resolve_and_verify_sequences(
-                &input,
-                0,
-                &reference_sequences,
-                &mut reference_decoder_history,
-            );
-            assert_eq!(reference_covered + reference_tail, input.len());
-
-            let reference_total: usize = reference_sequences
-                .iter()
-                .map(|sequence| sequence.literal_length as usize + sequence.match_length as usize)
-                .sum::<usize>()
-                + reference_tail;
-
-            assert_eq!(unchecked_total, input.len());
-            assert_eq!(reference_total, input.len());
-        }
+        finder.reset(second_input.len());
+        let mut repeat_offsets = RepeatOffsets::new();
+        let mut decoder_history = RepeatOffsets::new();
+        let (sequence_count, tail_literal_count) =
+            finder.find_sequences(&second_input, 0, &mut sequences, &mut repeat_offsets);
+        let (_, covered, _) = resolve_and_verify_sequences(
+            &second_input,
+            0,
+            &sequences[..sequence_count],
+            &mut decoder_history,
+        );
+        assert_eq!(covered + tail_literal_count, second_input.len());
     }
 }

@@ -29,11 +29,11 @@ pub(crate) fn get_table_parameters_for_input(
     input_length: usize,
 ) -> LevelParameters {
     match level_parameters.strategy {
-        Strategy::Ultra2 => {
+        Strategy::Fast | Strategy::Ultra2 => {
             super::level_table::get_level_parameters_for_input_length(level, input_length)
                 .unwrap_or(level_parameters)
         }
-        Strategy::Fast | Strategy::Lazy2 => level_parameters,
+        Strategy::Lazy2 => level_parameters,
     }
 }
 
@@ -47,6 +47,9 @@ pub(crate) fn get_table_parameters_for_input(
 }
 
 pub(crate) fn table_memory_length(level_parameters: LevelParameters) -> usize {
+    if level_parameters.strategy == Strategy::Fast {
+        return 0;
+    }
     hash_table_length(level_parameters)
         + chain_table_length(level_parameters)
         + optimal_table_length(level_parameters)
@@ -113,14 +116,8 @@ mod tests {
     }
 
     #[test]
-    fn split_table_storage_gives_the_fast_finder_only_a_hash_table() {
+    fn the_fast_finder_needs_no_table_memory() {
         let level_parameters = get_level_parameters(1).unwrap();
-        let mut memory = vec![0u32; table_memory_length(level_parameters)];
-        let storage = split_table_storage(&mut memory, level_parameters);
-        assert_eq!(
-            storage.hash_table.len(),
-            hash_table_length(level_parameters)
-        );
-        assert_eq!(storage.chain_table.len(), 0);
+        assert_eq!(table_memory_length(level_parameters), 0);
     }
 }

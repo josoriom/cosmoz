@@ -67,6 +67,20 @@ impl FseEncodeState {
         Ok(())
     }
 
+    #[inline(always)]
+    pub(crate) fn encode_symbol_without_flush(
+        &mut self,
+        writer: &mut BackwardBitWriter,
+        table: &FseEncodeTable,
+        symbol: u8,
+    ) {
+        let transform = &table.transforms[symbol as usize];
+        let bits_out = ((self.state as u32).wrapping_add(transform.bits_delta) >> 16) as usize;
+        writer.add_bits_without_flush(self.state as u64, bits_out);
+        let index = (self.state >> bits_out) as i64 + transform.find_state_delta as i64;
+        self.state = table.next_state[index as usize] as usize;
+    }
+
     pub(crate) fn flush(
         &self,
         writer: &mut BackwardBitWriter,

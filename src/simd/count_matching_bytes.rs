@@ -36,6 +36,21 @@ pub unsafe fn count_matching_bytes_unchecked(
     }
 }
 
+#[allow(clippy::missing_safety_doc)]
+#[inline(always)]
+pub unsafe fn count_matching_bytes_by_words_unchecked(
+    first: *const u8,
+    second: *const u8,
+    limit: usize,
+) -> usize {
+    unsafe {
+        let first_slice = core::slice::from_raw_parts(first, limit);
+        let second_slice = core::slice::from_raw_parts(second, limit);
+        count_matching_bytes_scalar(first_slice, second_slice)
+    }
+}
+
+#[inline(always)]
 fn count_matching_bytes_scalar(first: &[u8], second: &[u8]) -> usize {
     let limit = first.len().min(second.len());
     let mut matched = 0usize;

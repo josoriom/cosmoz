@@ -189,6 +189,95 @@ const MATCH_LENGTH_SMALL_CODE_TABLE: [u8; MATCH_LENGTH_SMALL_CODE_LENGTH] =
     build_match_length_small_code_table();
 
 #[cfg(feature = "compression")]
+const LITERAL_LENGTH_TABLE_LENGTH: usize = 64;
+#[cfg(feature = "compression")]
+const MATCH_LENGTH_TABLE_LENGTH: usize = 128;
+
+#[cfg(feature = "compression")]
+const fn build_literal_length_code_table() -> [u8; LITERAL_LENGTH_TABLE_LENGTH] {
+    let mut table = [0u8; LITERAL_LENGTH_TABLE_LENGTH];
+    let mut length = 0usize;
+    while length < LITERAL_LENGTH_TABLE_LENGTH {
+        table[length] = if length as u32 <= LITERAL_LENGTH_DIRECT_CODE_END {
+            length as u8
+        } else {
+            LITERAL_LENGTH_SMALL_CODE_TABLE[length - LITERAL_LENGTH_SMALL_CODE_START as usize]
+        };
+        length += 1;
+    }
+    table
+}
+
+#[cfg(feature = "compression")]
+const fn build_match_length_code_table() -> [u8; MATCH_LENGTH_TABLE_LENGTH] {
+    let mut table = [0u8; MATCH_LENGTH_TABLE_LENGTH];
+    let mut length_above_minimum = 0usize;
+    while length_above_minimum < MATCH_LENGTH_TABLE_LENGTH {
+        let length = length_above_minimum as u32 + MIN_MATCH_LENGTH;
+        table[length_above_minimum] = if length <= MATCH_LENGTH_DIRECT_CODE_END {
+            length_above_minimum as u8
+        } else {
+            MATCH_LENGTH_SMALL_CODE_TABLE[(length - MATCH_LENGTH_SMALL_CODE_START) as usize]
+        };
+        length_above_minimum += 1;
+    }
+    table
+}
+
+#[cfg(feature = "compression")]
+const fn build_extra_bits_table<const COUNT: usize>(
+    direct_code_count: usize,
+    extra_base: &[(u32, u8)],
+) -> [u8; COUNT] {
+    let mut table = [0u8; COUNT];
+    let mut index = 0usize;
+    while index < extra_base.len() {
+        table[direct_code_count + index] = extra_base[index].1;
+        index += 1;
+    }
+    table
+}
+
+#[cfg(feature = "compression")]
+const LITERAL_LENGTH_CODE_TABLE: [u8; LITERAL_LENGTH_TABLE_LENGTH] =
+    build_literal_length_code_table();
+#[cfg(feature = "compression")]
+const MATCH_LENGTH_CODE_TABLE: [u8; MATCH_LENGTH_TABLE_LENGTH] = build_match_length_code_table();
+#[cfg(feature = "compression")]
+pub(crate) const LITERAL_LENGTH_EXTRA_BITS: [u8; LITERAL_LENGTH_CODE_COUNT] =
+    build_extra_bits_table(16, &LITERAL_LENGTH_EXTRA_BASE);
+#[cfg(feature = "compression")]
+pub(crate) const MATCH_LENGTH_EXTRA_BITS: [u8; MATCH_LENGTH_CODE_COUNT] =
+    build_extra_bits_table(32, &MATCH_LENGTH_EXTRA_BASE);
+
+#[cfg(feature = "compression")]
+#[inline(always)]
+pub(crate) fn find_literal_length_code(length: u32) -> u8 {
+    if (length as usize) < LITERAL_LENGTH_TABLE_LENGTH {
+        LITERAL_LENGTH_CODE_TABLE[length as usize]
+    } else {
+        (highest_set_bit(length) + LITERAL_LENGTH_POWER_OF_TWO_CODE_OFFSET) as u8
+    }
+}
+
+#[cfg(feature = "compression")]
+#[inline(always)]
+pub(crate) fn find_match_length_code(length: u32) -> u8 {
+    let length_above_minimum = length - MIN_MATCH_LENGTH;
+    if (length_above_minimum as usize) < MATCH_LENGTH_TABLE_LENGTH {
+        MATCH_LENGTH_CODE_TABLE[length_above_minimum as usize]
+    } else {
+        (highest_set_bit(length_above_minimum) + MATCH_LENGTH_POWER_OF_TWO_CODE_OFFSET) as u8
+    }
+}
+
+#[cfg(feature = "compression")]
+#[inline(always)]
+pub(crate) fn find_offset_code(offset_value: u32) -> u8 {
+    highest_set_bit(offset_value) as u8
+}
+
+#[cfg(feature = "compression")]
 pub(crate) fn get_literal_length_code(length: u32) -> (u8, u32) {
     debug_assert!(length <= MAX_LITERAL_LENGTH);
     let length = length.min(MAX_LITERAL_LENGTH);
@@ -232,6 +321,27 @@ pub(crate) fn get_offset_code(offset_value: u32) -> (u8, u32) {
 #[cfg(all(test, feature = "compression"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quick_code_finders_agree_with_the_full_code_functions() {
+        for length in 0..=MAX_LITERAL_LENGTH {
+            let (code, extra) = get_literal_length_code(length);
+            assert_eq!(find_literal_length_code(length), code);
+            let mask = (1u32 << LITERAL_LENGTH_EXTRA_BITS[code as usize]) - 1;
+            assert_eq!(length & mask, extra);
+        }
+        for length in MIN_MATCH_LENGTH..=MAX_MATCH_LENGTH {
+            let (code, extra) = get_match_length_code(length);
+            assert_eq!(find_match_length_code(length), code);
+            let mask = (1u32 << MATCH_LENGTH_EXTRA_BITS[code as usize]) - 1;
+            assert_eq!((length - MIN_MATCH_LENGTH) & mask, extra);
+        }
+        for offset_value in 1..=1_000_000u32 {
+            let (code, extra) = get_offset_code(offset_value);
+            assert_eq!(find_offset_code(offset_value), code);
+            assert_eq!(offset_value & ((1u32 << code) - 1), extra);
+        }
+    }
 
     #[test]
     fn literal_length_code_fifteen() {

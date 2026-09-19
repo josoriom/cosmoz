@@ -25,14 +25,42 @@ pub(crate) const DEFAULT_LEVEL: u8 = SUPPORTED_LEVELS[0];
 
 pub(crate) const fn level_one_parameters() -> LevelParameters {
     LevelParameters {
-        window_log: 20,
+        window_log: 19,
         chain_log: 13,
-        hash_log: 16,
+        hash_log: 14,
         search_log: 1,
-        min_match: 4,
+        min_match: 7,
         target_length: 0,
         strategy: Strategy::Fast,
     }
+}
+
+const fn level_one_parameters_for_input_length(input_length: usize) -> LevelParameters {
+    let (window_log, chain_log, hash_log, min_match) = if input_length <= SMALL_INPUT_LENGTH {
+        (14, 14, 15, 5)
+    } else if input_length <= MEDIUM_INPUT_LENGTH {
+        (17, 12, 13, 6)
+    } else if input_length <= LARGE_INPUT_LENGTH {
+        (18, 13, 14, 6)
+    } else {
+        return level_one_parameters();
+    };
+    LevelParameters {
+        window_log,
+        chain_log,
+        hash_log,
+        search_log: 1,
+        min_match,
+        target_length: 0,
+        strategy: Strategy::Fast,
+    }
+}
+
+pub(crate) fn get_level_one_parameters_for_input_length(input_length: usize) -> LevelParameters {
+    shrink_parameters_to_input_length(
+        level_one_parameters_for_input_length(input_length),
+        input_length,
+    )
 }
 
 #[cfg(feature = "compression")]
@@ -96,17 +124,11 @@ const fn level_twenty_two_parameters_for_input_length(input_length: usize) -> Le
     }
 }
 
-#[cfg(feature = "compression")]
 const SMALL_INPUT_LENGTH: usize = 16 * 1024;
-#[cfg(feature = "compression")]
 const MEDIUM_INPUT_LENGTH: usize = 128 * 1024;
-#[cfg(feature = "compression")]
 const LARGE_INPUT_LENGTH: usize = 256 * 1024;
-#[cfg(feature = "compression")]
 const MIN_HASH_LOG: u8 = 6;
-#[cfg(feature = "compression")]
 const MIN_WINDOW_LOG: u8 = 10;
-#[cfg(feature = "compression")]
 const MAX_RESIZED_INPUT_LENGTH: usize = 1 << 30;
 
 pub(crate) const fn get_level_parameters(level: u8) -> Option<LevelParameters> {
@@ -128,13 +150,13 @@ pub(crate) fn get_level_parameters_for_input_length(
     input_length: usize,
 ) -> Option<LevelParameters> {
     let parameters = match level {
+        1 => level_one_parameters_for_input_length(input_length),
         22 => level_twenty_two_parameters_for_input_length(input_length),
         _ => get_level_parameters(level)?,
     };
     Some(shrink_parameters_to_input_length(parameters, input_length))
 }
 
-#[cfg(feature = "compression")]
 fn shrink_parameters_to_input_length(
     parameters: LevelParameters,
     input_length: usize,
@@ -167,10 +189,34 @@ mod tests {
     #[test]
     fn level_one_matches_clevels() {
         let parameters = get_level_parameters(1).unwrap();
-        assert_eq!(parameters.window_log, 20);
-        assert_eq!(parameters.hash_log, 16);
-        assert_eq!(parameters.min_match, 4);
+        assert_eq!(parameters.window_log, 19);
+        assert_eq!(parameters.hash_log, 14);
+        assert_eq!(parameters.min_match, 7);
         assert_eq!(parameters.strategy, Strategy::Fast);
+    }
+
+    #[test]
+    fn level_one_follows_the_clevels_tables_for_each_input_length() {
+        let large = get_level_one_parameters_for_input_length(4 * 1024 * 1024);
+        assert_eq!(
+            (large.window_log, large.hash_log, large.min_match),
+            (19, 14, 7)
+        );
+        let medium = get_level_one_parameters_for_input_length(200 * 1024);
+        assert_eq!(
+            (medium.window_log, medium.hash_log, medium.min_match),
+            (18, 14, 6)
+        );
+        let small = get_level_one_parameters_for_input_length(100 * 1024);
+        assert_eq!(
+            (small.window_log, small.hash_log, small.min_match),
+            (17, 13, 6)
+        );
+        let tiny = get_level_one_parameters_for_input_length(5_591);
+        assert_eq!(
+            (tiny.window_log, tiny.hash_log, tiny.min_match),
+            (13, 14, 5)
+        );
     }
 
     #[test]
