@@ -6,7 +6,7 @@ use crate::{
         histogram::count_symbols,
         huffman_encode::{encode_four_streams, encode_one_stream},
         huffman_encode_table::{
-            HuffmanEncodeTable, build_huffman_encode_table, write_huffman_table,
+            HuffmanEncodeTable, build_huffman_encode_table, get_cheap_depth, write_huffman_table,
         },
     },
 };
@@ -62,7 +62,7 @@ pub(crate) fn write_literals(
         weight_fse_table,
         table_reuse_allowed,
         &counts,
-        hints.allow_quick_raw,
+        hints,
     ) {
         Ok(written) => Ok(written),
         Err(_) => write_raw_literals(input, output),
@@ -153,7 +153,7 @@ fn write_compressed_literals(
     weight_fse_table: &mut FseEncodeTable,
     table_reuse_allowed: bool,
     counts: &[u32; 256],
-    allow_quick_raw: bool,
+    hints: LiteralsHints<'_>,
 ) -> Result<usize, EncodeError> {
     let treeless_bit_cost = if table_reuse_allowed {
         estimate_huffman_bit_cost(counts, huffman_table)
@@ -162,7 +162,8 @@ fn write_compressed_literals(
     };
 
     let mut candidate_table = HuffmanEncodeTable::new();
-    build_huffman_encode_table(counts, &mut candidate_table)?;
+    let depth = get_cheap_depth(counts, input.len());
+    build_huffman_encode_table(counts, &mut candidate_table, depth)?;
     let candidate_bit_cost =
         estimate_huffman_bit_cost(counts, &candidate_table).ok_or(EncodeError::TableNotUsable)?;
 
@@ -174,7 +175,7 @@ fn write_compressed_literals(
     )?;
 
     let table_is_too_large =
-        allow_quick_raw && candidate_table_bytes + TABLE_OVERHEAD >= input.len();
+        hints.allow_quick_raw && candidate_table_bytes + TABLE_OVERHEAD >= input.len();
     let use_treeless = match treeless_bit_cost {
         Some(treeless_bits) => {
             table_is_too_large || treeless_bits < candidate_bit_cost + candidate_table_bytes * 8

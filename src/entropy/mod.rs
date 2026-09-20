@@ -10,4 +10,6 @@ pub(crate) mod huffman_decode_table;
 #[cfg(feature = "compression")]
 pub(crate) mod huffman_encode;
 #[cfg(feature = "compression")]
+pub(crate) mod symbol_cost;
+#[cfg(feature = "compression")]
 pub(crate) mod huffman_encode_table;

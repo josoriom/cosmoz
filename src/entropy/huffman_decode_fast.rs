@@ -315,7 +315,7 @@ mod tests {
         counts: &[u32; 256],
     ) -> Option<(HuffmanEncodeTable, HuffmanDecodeTable)> {
         let mut encode_table = HuffmanEncodeTable::new();
-        build_huffman_encode_table(counts, &mut encode_table).ok()?;
+        build_huffman_encode_table(counts, &mut encode_table, crate::entropy::huffman_decode_table::MAX_HUFFMAN_BITS).ok()?;
 
         let mut weights_output = [0u8; 256];
         let bytes_written = crate::entropy::huffman_encode_table::write_direct_weights(

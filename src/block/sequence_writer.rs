@@ -3,10 +3,10 @@ use crate::{
     block::{
         sequence_codes::{
             LITERAL_LENGTH_CODE_COUNT, LITERAL_LENGTH_EXTRA_BITS, MATCH_LENGTH_CODE_COUNT,
-            MATCH_LENGTH_EXTRA_BITS, MIN_MATCH_LENGTH, OFFSET_CODE_COUNT,
-            find_literal_length_code, find_match_length_code, find_offset_code,
-            get_literal_length_code, get_literal_length_extra_bits, get_match_length_code,
-            get_match_length_extra_bits, get_offset_code,
+            MATCH_LENGTH_EXTRA_BITS, MIN_MATCH_LENGTH, OFFSET_CODE_COUNT, find_literal_length_code,
+            find_match_length_code, find_offset_code, get_literal_length_code,
+            get_literal_length_extra_bits, get_match_length_code, get_match_length_extra_bits,
+            get_offset_code,
         },
         sequence_record::SequenceRecord,
         sequences::TableMode,
@@ -22,8 +22,11 @@ use crate::{
             LITERAL_LENGTH_ACCURACY_LOG, LITERAL_LENGTH_DEFAULT_COUNTS, MATCH_LENGTH_ACCURACY_LOG,
             MATCH_LENGTH_DEFAULT_COUNTS, OFFSET_ACCURACY_LOG, OFFSET_DEFAULT_COUNTS,
         },
+        symbol_cost::{get_encode_table_bits, get_entropy_bits, get_shared_table_bits},
     },
 };
+
+const QUICK_SEQUENCES_PER_SYMBOL: usize = 9;
 
 pub(crate) struct SequenceEncodeTables {
     pub literal_length: FseEncodeTable,
@@ -80,6 +83,7 @@ pub(crate) fn write_sequences(
     sequences: &[SequenceRecord],
     output: &mut [u8],
     tables: &mut SequenceEncodeTables,
+    quick_choice: bool,
 ) -> Result<usize, EncodeError> {
     let sequence_count = sequences.len();
     if sequence_count == 0 {
@@ -105,6 +109,8 @@ pub(crate) fn write_sequences(
         LITERAL_LENGTH_ACCURACY_LOG,
         9,
         &mut tables.literal_length,
+        tables.literal_length_mode,
+        quick_choice,
     )?;
     tables.literal_length_mode = literal_length_mode;
 
@@ -116,6 +122,8 @@ pub(crate) fn write_sequences(
         OFFSET_ACCURACY_LOG,
         8,
         &mut tables.offset,
+        tables.offset_mode,
+        quick_choice,
     )?;
     tables.offset_mode = offset_mode;
 
@@ -127,6 +135,8 @@ pub(crate) fn write_sequences(
         MATCH_LENGTH_ACCURACY_LOG,
         9,
         &mut tables.match_length,
+        tables.match_length_mode,
+        quick_choice,
     )?;
     tables.match_length_mode = match_length_mode;
 
@@ -232,7 +242,7 @@ fn write_table_description(
             Ok(1)
         }
         TableMode::Compressed => write_fse_table_description(output, table),
-        TableMode::Repeat => Err(EncodeError::TableNotUsable),
+        TableMode::Repeat => Ok(0),
     }
 }
 
@@ -244,6 +254,8 @@ fn pick_table_mode(
     predefined_log: usize,
     max_log: usize,
     table: &mut FseEncodeTable,
+    previous_mode: TableMode,
+    quick_choice: bool,
 ) -> Result<(TableMode, usize), EncodeError> {
     debug_assert_eq!(counts.len(), max_symbol + 1);
 
@@ -254,10 +266,15 @@ fn pick_table_mode(
 
     let max_used_symbol = counts.iter().rposition(|&count| count > 0).unwrap_or(0);
     let predefined_supports_this = max_used_symbol < predefined_counts.len();
+    let can_repeat = matches!(previous_mode, TableMode::Compressed | TableMode::Repeat);
 
-    if total < 64 && predefined_supports_this {
-        build_fse_encode_table(predefined_counts, predefined_log, table)?;
-        return Ok((TableMode::Predefined, 0));
+    if quick_choice && predefined_supports_this {
+        let largest_count = counts.iter().copied().max().unwrap_or(0) as usize;
+        let fewest_for_own_table = ((1 << predefined_log) * QUICK_SEQUENCES_PER_SYMBOL) >> 3;
+        if total < fewest_for_own_table || largest_count < (total >> (predefined_log - 1)) {
+            build_fse_encode_table(predefined_counts, predefined_log, table)?;
+            return Ok((TableMode::Predefined, 0));
+        }
     }
 
     let accuracy_log = pick_accuracy_log(total, max_used_symbol + 1, max_log);
@@ -278,12 +295,31 @@ fn pick_table_mode(
 
     let mut description_scratch = [0u8; 320];
     let description_bytes = write_fse_table_description(&mut description_scratch, &custom_table)?;
-    let custom_cost = estimate_bit_cost(counts, &normalized_counts[..counts.len()], accuracy_log)
-        + description_bytes * 8;
+    let custom_cost = description_bytes * 8 + get_entropy_bits(counts, total);
 
-    if predefined_supports_this {
-        let predefined_cost = estimate_bit_cost(counts, predefined_counts, predefined_log);
-        if custom_cost >= predefined_cost {
+    if !quick_choice {
+        let repeat_cost = if can_repeat {
+            get_encode_table_bits(table, counts)
+        } else {
+            None
+        };
+        if predefined_supports_this {
+            let predefined_cost = get_shared_table_bits(predefined_counts, predefined_log, counts);
+            if predefined_cost <= custom_cost
+                && repeat_cost.is_none_or(|cost| predefined_cost <= cost)
+            {
+                build_fse_encode_table(predefined_counts, predefined_log, table)?;
+                return Ok((TableMode::Predefined, 0));
+            }
+        }
+        if let Some(repeat_cost) = repeat_cost
+            && repeat_cost <= custom_cost
+        {
+            return Ok((TableMode::Repeat, 0));
+        }
+    } else if predefined_supports_this {
+        let predefined_cost = get_shared_table_bits(predefined_counts, predefined_log, counts);
+        if predefined_cost <= custom_cost {
             build_fse_encode_table(predefined_counts, predefined_log, table)?;
             return Ok((TableMode::Predefined, 0));
         }
@@ -317,32 +353,6 @@ fn build_rle_encode_table(symbol: u8, table: &mut FseEncodeTable) {
         find_state_delta: 0,
     };
     table.next_state[0] = 0;
-}
-
-fn effective_probability_count(normalized_count: i16) -> u32 {
-    if normalized_count <= 0 {
-        1
-    } else {
-        normalized_count as u32
-    }
-}
-
-fn floor_log2(value: u32) -> u32 {
-    31 - value.leading_zeros()
-}
-
-fn estimate_bit_cost(counts: &[u32], normalized_counts: &[i16], accuracy_log: usize) -> usize {
-    let mut total_bits = 0usize;
-    for (symbol, &count) in counts.iter().enumerate() {
-        if count == 0 {
-            continue;
-        }
-        let effective =
-            effective_probability_count(normalized_counts.get(symbol).copied().unwrap_or(0));
-        let bits = accuracy_log as u32 - floor_log2(effective);
-        total_bits += count as usize * bits as usize;
-    }
-    total_bits
 }
 
 fn write_one_stream(
@@ -495,7 +505,7 @@ mod tests {
         let mut output = [0u8; 8192];
         let mut tables = SequenceEncodeTables::new();
 
-        let written = write_sequences(&records, &mut output, &mut tables).unwrap();
+        let written = write_sequences(&records, &mut output, &mut tables, false).unwrap();
 
         let header = read_sequences_header(&output[..written]).unwrap();
         assert_eq!(header.sequence_count, records.len());
@@ -543,7 +553,7 @@ mod tests {
         let mut output = [0u8; 16384];
         let mut tables = SequenceEncodeTables::new();
 
-        let written = write_sequences(&records, &mut output, &mut tables).unwrap();
+        let written = write_sequences(&records, &mut output, &mut tables, false).unwrap();
 
         assert_eq!(tables.literal_length_mode, TableMode::Compressed);
 

@@ -15,6 +15,7 @@ const MAX_PACKAGE_MERGE_ITEMS: usize = 2 * 256 - 1;
 const NO_LEAF: u16 = u16::MAX;
 const MAX_DIRECT_WEIGHT_COUNT: usize = 128;
 const MAX_WEIGHT_VALUE: usize = MAX_HUFFMAN_BITS;
+const MIN_HUFFMAN_BITS: usize = 5;
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct HuffmanCode {
@@ -49,16 +50,34 @@ impl Default for HuffmanEncodeTable {
     }
 }
 
+pub(crate) fn get_cheap_depth(counts: &[u32; 256], total: usize) -> usize {
+    if total <= 1 {
+        return MAX_HUFFMAN_BITS;
+    }
+    let largest_symbol = find_largest_symbol(counts).max(1);
+    let depth_needed_for_symbols = (highest_bit(total) + 1).min(highest_bit(largest_symbol) + 2);
+    let depth_worth_paying_for = highest_bit(total - 1).saturating_sub(1);
+    depth_worth_paying_for
+        .min(MAX_HUFFMAN_BITS)
+        .max(depth_needed_for_symbols)
+        .clamp(MIN_HUFFMAN_BITS, MAX_HUFFMAN_BITS)
+}
+
+fn highest_bit(value: usize) -> usize {
+    (usize::BITS - 1 - (value | 1).leading_zeros()) as usize
+}
+
 pub(crate) fn build_huffman_encode_table(
     counts: &[u32; 256],
     table: &mut HuffmanEncodeTable,
+    depth_limit: usize,
 ) -> Result<(), EncodeError> {
     if count_used_symbols(counts) < 2 {
         return Err(EncodeError::TableNotUsable);
     }
 
     let mut lengths = [0u8; 256];
-    let max_bits = build_code_lengths(counts, &mut lengths);
+    let max_bits = build_code_lengths(counts, &mut lengths, depth_limit.min(MAX_HUFFMAN_BITS));
 
     table.symbol_count = find_largest_symbol(counts) + 1;
     table.max_bits = max_bits;
@@ -120,7 +139,7 @@ fn insertion_sort(items: &mut [(u64, u8)]) {
     }
 }
 
-fn build_code_lengths(counts: &[u32; 256], lengths: &mut [u8; 256]) -> u8 {
+fn build_code_lengths(counts: &[u32; 256], lengths: &mut [u8; 256], depth_limit: usize) -> u8 {
     for length in lengths.iter_mut() {
         *length = 0;
     }
@@ -141,7 +160,7 @@ fn build_code_lengths(counts: &[u32; 256], lengths: &mut [u8; 256]) -> u8 {
     let mut previous_weights = [0u64; MAX_PACKAGE_MERGE_ITEMS];
     let mut previous_size = 0usize;
 
-    for level_index in 0..MAX_HUFFMAN_BITS {
+    for level_index in 0..depth_limit {
         let mut current_weights = [0u64; MAX_PACKAGE_MERGE_ITEMS];
         let mut current_markers = [NO_LEAF; MAX_PACKAGE_MERGE_ITEMS];
         let mut current_size = 0usize;
@@ -181,7 +200,7 @@ fn build_code_lengths(counts: &[u32; 256], lengths: &mut [u8; 256]) -> u8 {
     }
 
     let mut prefix_size = 2 * (used_symbol_count - 1);
-    for level_index in (0..MAX_HUFFMAN_BITS).rev() {
+    for level_index in (0..depth_limit).rev() {
         let size = level_sizes[level_index];
         let take = prefix_size.min(size);
         let mut package_count_in_prefix = 0usize;
@@ -409,7 +428,7 @@ mod tests {
         }
 
         let mut table = HuffmanEncodeTable::new();
-        build_huffman_encode_table(&counts, &mut table).unwrap();
+        build_huffman_encode_table(&counts, &mut table, MAX_HUFFMAN_BITS).unwrap();
 
         let weights = &table.weights[..table.symbol_count];
         assert!(
@@ -453,7 +472,7 @@ slowly behind the distant hills and the wind carries the scent of rain across th
         counts[2] = 1;
 
         let mut table = HuffmanEncodeTable::new();
-        build_huffman_encode_table(&counts, &mut table).unwrap();
+        build_huffman_encode_table(&counts, &mut table, MAX_HUFFMAN_BITS).unwrap();
 
         assert_eq!(table.max_bits, 2);
         assert_eq!(table.symbol_count, 3);
@@ -491,7 +510,7 @@ slowly behind the distant hills and the wind carries the scent of rain across th
         }
 
         let mut lengths = [0u8; 256];
-        let max_bits = build_code_lengths(&counts, &mut lengths);
+        let max_bits = build_code_lengths(&counts, &mut lengths, MAX_HUFFMAN_BITS);
         assert!(max_bits as usize <= MAX_HUFFMAN_BITS);
 
         let package_merge_cost: u64 = (0..256)
@@ -509,7 +528,7 @@ slowly behind the distant hills and the wind carries the scent of rain across th
         }
 
         let mut lengths = [0u8; 256];
-        let max_bits = build_code_lengths(&counts, &mut lengths);
+        let max_bits = build_code_lengths(&counts, &mut lengths, MAX_HUFFMAN_BITS);
 
         assert!(max_bits as usize <= MAX_HUFFMAN_BITS);
 
@@ -530,7 +549,7 @@ slowly behind the distant hills and the wind carries the scent of rain across th
     fn written_table_round_trips_through_decoder() {
         let counts = counts_for(SAMPLE_TEXT);
         let mut table = HuffmanEncodeTable::new();
-        build_huffman_encode_table(&counts, &mut table).unwrap();
+        build_huffman_encode_table(&counts, &mut table, MAX_HUFFMAN_BITS).unwrap();
 
         let mut output = [0u8; 256];
         let bytes_written = write_direct_weights(&mut output, &table).unwrap();
@@ -562,7 +581,7 @@ slowly behind the distant hills and the wind carries the scent of rain across th
         single_symbol_counts[0] = 10;
         let mut table = HuffmanEncodeTable::new();
         assert_eq!(
-            build_huffman_encode_table(&single_symbol_counts, &mut table),
+            build_huffman_encode_table(&single_symbol_counts, &mut table, MAX_HUFFMAN_BITS),
             Err(EncodeError::TableNotUsable)
         );
 
@@ -571,7 +590,7 @@ slowly behind the distant hills and the wind carries the scent of rain across th
             *count = 1;
         }
         let mut wide_table = HuffmanEncodeTable::new();
-        build_huffman_encode_table(&many_symbol_counts, &mut wide_table).unwrap();
+        build_huffman_encode_table(&many_symbol_counts, &mut wide_table, MAX_HUFFMAN_BITS).unwrap();
         let mut output = [0u8; 256];
         assert_eq!(
             write_direct_weights(&mut output, &wide_table),
@@ -583,7 +602,7 @@ slowly behind the distant hills and the wind carries the scent of rain across th
         small_counts[1] = 3;
         small_counts[2] = 1;
         let mut small_table = HuffmanEncodeTable::new();
-        build_huffman_encode_table(&small_counts, &mut small_table).unwrap();
+        build_huffman_encode_table(&small_counts, &mut small_table, MAX_HUFFMAN_BITS).unwrap();
         let mut tiny_output = [0u8; 1];
         assert_eq!(
             write_direct_weights(&mut tiny_output, &small_table),
@@ -637,7 +656,7 @@ slowly behind the distant hills and the wind carries the scent of rain across th
 
         let counts = counts_for(&input);
         let mut table = HuffmanEncodeTable::new();
-        build_huffman_encode_table(&counts, &mut table).unwrap();
+        build_huffman_encode_table(&counts, &mut table, MAX_HUFFMAN_BITS).unwrap();
 
         let mut output = [0u8; 4096];
         let mut weight_fse_table = FseEncodeTable::new();
@@ -654,7 +673,7 @@ slowly behind the distant hills and the wind carries the scent of rain across th
         counts[0] = 20;
         counts[1] = 3;
         let mut table = HuffmanEncodeTable::new();
-        build_huffman_encode_table(&counts, &mut table).unwrap();
+        build_huffman_encode_table(&counts, &mut table, MAX_HUFFMAN_BITS).unwrap();
         assert_eq!(table.symbol_count - 1, 1);
 
         let mut output = [0u8; 256];

@@ -2,7 +2,9 @@ use crate::algorithms::binary_tree_matcher::{
     BinaryTreeMatcher, INPUT_TAIL_RESERVE, LONGEST_OPTIMAL_MATCH, MAX_HASH3_LOG, MatchCandidate,
 };
 use crate::algorithms::symbol_prices::SymbolPrices;
-use crate::block::{repeat_offsets::RepeatOffsets, sequence_record::SequenceRecord};
+use crate::block::{
+    literal_buffer::LiteralBuffer, repeat_offsets::RepeatOffsets, sequence_record::SequenceRecord,
+};
 use crate::levels::{
     MatchFinder,
     level_table::{LevelParameters, get_level_parameters_for_input_length},
@@ -113,6 +115,7 @@ impl<'tables> Ultra2Finder<'tables> {
         block_start: usize,
         repeats: &mut [u32; 3],
         sequences: &mut [SequenceRecord],
+        literals: &mut LiteralBuffer<'_>,
     ) -> (usize, usize) {
         let Ultra2Finder {
             matcher,
@@ -285,11 +288,11 @@ impl<'tables> Ultra2Finder<'tables> {
                         } else {
                             SHORTEST_MATCH
                         };
+                        let start_price = base_price + prices.get_match_start_price(candidate.offset_base);
                         let mut length = candidate.length;
                         while length >= start_length {
                             let node_position = current + length as usize;
-                            let price =
-                                base_price + prices.get_match_price(candidate.offset_base, length);
+                            let price = start_price + prices.get_match_length_price(length);
                             if node_position > last_position || price < nodes[node_position].price {
                                 while last_position < node_position {
                                     last_position += 1;
@@ -355,6 +358,7 @@ impl<'tables> Ultra2Finder<'tables> {
                     continue;
                 }
                 let literal_end = anchor + node.literal_length as usize;
+                literals.add(input, anchor, node.literal_length as usize);
                 prices.record_sequence(
                     &input[anchor..literal_end],
                     node.offset_base,
@@ -373,7 +377,8 @@ impl<'tables> Ultra2Finder<'tables> {
             prices.update_sum_prices();
         }
 
-        (sequence_count, input_end - anchor)
+        literals.add(input, anchor, input_end - anchor);
+        (sequence_count, literals.count())
     }
 }
 
@@ -394,6 +399,7 @@ impl MatchFinder for Ultra2Finder<'_> {
         input: &[u8],
         block_start: usize,
         sequences: &mut [SequenceRecord],
+        literals: &mut LiteralBuffer<'_>,
         repeat_offsets: &mut RepeatOffsets,
     ) -> (usize, usize) {
         let block_length = input.len() - block_start;
@@ -403,7 +409,8 @@ impl MatchFinder for Ultra2Finder<'_> {
             || self.nodes.is_empty()
             || !self.matcher.is_usable()
         {
-            return (0, block_length);
+            literals.add(input, block_start, block_length);
+            return (0, literals.count());
         }
 
         self.matcher.prepare_for_block(block_start);
@@ -419,17 +426,25 @@ impl MatchFinder for Ultra2Finder<'_> {
         {
             let mut seeding_repeats = repeats;
             unsafe {
-                self.compress_block_unchecked(input, block_start, &mut seeding_repeats, sequences)
+                self.compress_block_unchecked(
+                    input,
+                    block_start,
+                    &mut seeding_repeats,
+                    sequences,
+                    literals,
+                )
             };
+            literals.clear();
             self.matcher.forget_history_before(block_length);
         }
 
-        let (sequence_count, tail_literal_count) =
-            unsafe { self.compress_block_unchecked(input, block_start, &mut repeats, sequences) };
+        let (sequence_count, _) = unsafe {
+            self.compress_block_unchecked(input, block_start, &mut repeats, sequences, literals)
+        };
         repeat_offsets.first = repeats[0];
         repeat_offsets.second = repeats[1];
         repeat_offsets.third = repeats[2];
-        (sequence_count, tail_literal_count)
+        (sequence_count, literals.count())
     }
 }
 
@@ -437,6 +452,30 @@ impl MatchFinder for Ultra2Finder<'_> {
 mod tests {
     use super::*;
     use crate::levels::level_table::get_level_parameters;
+
+    fn get_tail_literal_count(sequences: &[SequenceRecord], literal_count: usize) -> usize {
+        literal_count
+            - sequences
+                .iter()
+                .map(|sequence| sequence.literal_length as usize)
+                .sum::<usize>()
+    }
+
+    fn find_sequences_with_literals(
+        finder: &mut impl MatchFinder,
+        input: &[u8],
+        block_start: usize,
+        sequences: &mut [SequenceRecord],
+        repeat_offsets: &mut RepeatOffsets,
+    ) -> (usize, usize, Vec<u8>) {
+        let mut collected = vec![0u8; input.len() + 32];
+        let mut literals = LiteralBuffer::new(&mut collected);
+        let (sequence_count, literal_count) =
+            finder.find_sequences(input, block_start, sequences, &mut literals, repeat_offsets);
+        let tail_literal_count = get_tail_literal_count(&sequences[..sequence_count], literal_count);
+        collected.truncate(literal_count);
+        (sequence_count, tail_literal_count, collected)
+    }
 
     fn build_finder_memory(parameters: LevelParameters) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
         (
@@ -491,7 +530,8 @@ mod tests {
             let mut block_start = 0usize;
             while block_start < input.len() {
                 let block_end = (block_start + 128 * 1024).min(input.len());
-                let (sequence_count, tail_literal_count) = finder.find_sequences(
+                let (sequence_count, tail_literal_count, _) = find_sequences_with_literals(
+                    &mut finder,
                     &input[..block_end],
                     block_start,
                     &mut sequences,

@@ -425,7 +425,7 @@ mod tests {
                 counts[random.next_range(symbol_count)] += 1;
             }
             let mut encode_table = HuffmanEncodeTable::new();
-            if build_huffman_encode_table(&counts, &mut encode_table).is_err() {
+            if build_huffman_encode_table(&counts, &mut encode_table, crate::entropy::huffman_decode_table::MAX_HUFFMAN_BITS).is_err() {
                 continue;
             }
 

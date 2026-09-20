@@ -1,6 +1,7 @@
 use crate::block::sequence_codes::{
-    LITERAL_LENGTH_CODE_COUNT, MATCH_LENGTH_CODE_COUNT, OFFSET_CODE_COUNT, get_literal_length_code,
-    get_literal_length_extra_bits, get_match_length_code, get_match_length_extra_bits,
+    LITERAL_LENGTH_CODE_COUNT, MATCH_LENGTH_CODE_COUNT, MATCH_LENGTH_EXTRA_BITS, OFFSET_CODE_COUNT,
+    find_match_length_code, get_literal_length_code, get_literal_length_extra_bits,
+    get_match_length_code,
 };
 use crate::frame::block_header::MAX_BLOCK_SIZE;
 
@@ -187,21 +188,30 @@ impl SymbolPrices {
     }
 
     #[inline(always)]
-    pub(crate) fn get_match_price(&self, offset_base: u32, match_length: u32) -> i32 {
+    pub(crate) fn get_match_start_price(&self, offset_base: u32) -> i32 {
         let offset_code = highest_bit(offset_base);
         if self.mode == PriceMode::Predefined {
-            return (get_weight(match_length - MIN_MATCH_LENGTH)
-                + (PREDEFINED_OFFSET_BITS + offset_code) * BIT_COST_MULTIPLIER)
-                as i32;
+            return ((PREDEFINED_OFFSET_BITS + offset_code) * BIT_COST_MULTIPLIER) as i32;
         }
-        let offset_price = offset_code * BIT_COST_MULTIPLIER + self.offset_code_sum_price
-            - get_weight(self.offset_code_frequencies[offset_code as usize]);
-        let (match_length_code, _) = get_match_length_code(match_length);
-        let match_length_price = get_match_length_extra_bits(match_length_code) as u32
-            * BIT_COST_MULTIPLIER
+        (offset_code * BIT_COST_MULTIPLIER + self.offset_code_sum_price
+            - get_weight(self.offset_code_frequencies[offset_code as usize])
+            + MATCH_PRICE_PENALTY) as i32
+    }
+
+    #[inline(always)]
+    pub(crate) fn get_match_length_price(&self, match_length: u32) -> i32 {
+        if self.mode == PriceMode::Predefined {
+            return get_weight(match_length - MIN_MATCH_LENGTH) as i32;
+        }
+        let code = find_match_length_code(match_length) as usize;
+        (MATCH_LENGTH_EXTRA_BITS[code] as u32 * BIT_COST_MULTIPLIER
             + self.match_length_sum_price
-            - get_weight(self.match_length_frequencies[match_length_code as usize]);
-        (offset_price + match_length_price + MATCH_PRICE_PENALTY) as i32
+            - get_weight(self.match_length_frequencies[code])) as i32
+    }
+
+    #[inline(always)]
+    pub(crate) fn get_match_price(&self, offset_base: u32, match_length: u32) -> i32 {
+        self.get_match_start_price(offset_base) + self.get_match_length_price(match_length)
     }
 
     pub(crate) fn record_sequence(&mut self, literals: &[u8], offset_base: u32, match_length: u32) {

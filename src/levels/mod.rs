@@ -6,7 +6,9 @@ use crate::algorithms::fast::FastFinder;
 use crate::algorithms::lazy2::Lazy2Finder;
 #[cfg(feature = "compression")]
 use crate::algorithms::ultra2::Ultra2Finder;
-use crate::block::{repeat_offsets::RepeatOffsets, sequence_record::SequenceRecord};
+use crate::block::{
+    literal_buffer::LiteralBuffer, repeat_offsets::RepeatOffsets, sequence_record::SequenceRecord,
+};
 use finder_tables::TableStorage;
 use level_table::LevelParameters;
 #[cfg(feature = "compression")]
@@ -21,6 +23,7 @@ pub(crate) trait MatchFinder {
         input: &[u8],
         block_start: usize,
         sequences: &mut [SequenceRecord],
+        literals: &mut LiteralBuffer<'_>,
         repeat_offsets: &mut RepeatOffsets,
     ) -> (usize, usize);
     #[allow(dead_code)]
@@ -96,19 +99,20 @@ impl MatchFinder for AnyFinder<'_> {
         input: &[u8],
         block_start: usize,
         sequences: &mut [SequenceRecord],
+        literals: &mut LiteralBuffer<'_>,
         repeat_offsets: &mut RepeatOffsets,
     ) -> (usize, usize) {
         match self {
             AnyFinder::Fast(finder) => {
-                finder.find_sequences(input, block_start, sequences, repeat_offsets)
+                finder.find_sequences(input, block_start, sequences, literals, repeat_offsets)
             }
             #[cfg(feature = "compression")]
             AnyFinder::Lazy2(finder) => {
-                finder.find_sequences(input, block_start, sequences, repeat_offsets)
+                finder.find_sequences(input, block_start, sequences, literals, repeat_offsets)
             }
             #[cfg(feature = "compression")]
             AnyFinder::Ultra2(finder) => {
-                finder.find_sequences(input, block_start, sequences, repeat_offsets)
+                finder.find_sequences(input, block_start, sequences, literals, repeat_offsets)
             }
             #[cfg(not(feature = "compression"))]
             AnyFinder::Unused(_) => (0, 0),

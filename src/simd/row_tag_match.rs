@@ -33,6 +33,29 @@ pub(crate) fn match_row_tags32(tags: &[u8; 32], target: u8) -> u32 {
     low_mask | (high_mask << 16)
 }
 
+#[cfg(feature = "compression")]
+pub(crate) fn match_row_tags64(tags: &[u8; 64], target: u8) -> u64 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        match_row_tags64_neon(tags, target)
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        match_row_tags64_by_quarters(tags, target)
+    }
+}
+
+#[cfg(feature = "compression")]
+#[allow(dead_code)]
+fn match_row_tags64_by_quarters(tags: &[u8; 64], target: u8) -> u64 {
+    let (quarters, _) = tags.as_chunks::<16>();
+    let mut mask = 0u64;
+    for (index, quarter) in quarters.iter().enumerate() {
+        mask |= (match_row_tags16(quarter, target) as u64) << (16 * index);
+    }
+    mask
+}
+
 #[allow(dead_code)]
 fn match_row_tags16_scalar(tags: &[u8; 16], target: u8) -> u16 {
     let mut mask = 0u16;
@@ -69,6 +92,30 @@ fn match_row_tags16_neon(tags: &[u8; 16], target: u8) -> u16 {
         let sum1 = vpadd_u8(sum0, sum0);
         let sum2 = vpadd_u8(sum1, sum1);
         vget_lane_u16::<0>(vreinterpret_u16_u8(sum2))
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[cfg(feature = "compression")]
+fn match_row_tags64_neon(tags: &[u8; 64], target: u8) -> u64 {
+    use core::arch::aarch64::{
+        vceqq_u8, vdupq_n_u8, vget_lane_u64, vld4q_u8, vreinterpret_u64_u8,
+        vreinterpretq_u16_u8, vshrn_n_u16, vsriq_n_u8,
+    };
+
+    unsafe {
+        let lanes = vld4q_u8(tags.as_ptr());
+        let targets = vdupq_n_u8(target);
+        let equal_first = vceqq_u8(lanes.0, targets);
+        let equal_second = vceqq_u8(lanes.1, targets);
+        let equal_third = vceqq_u8(lanes.2, targets);
+        let equal_fourth = vceqq_u8(lanes.3, targets);
+        let first_pair = vsriq_n_u8::<1>(equal_second, equal_first);
+        let second_pair = vsriq_n_u8::<1>(equal_fourth, equal_third);
+        let all_four = vsriq_n_u8::<2>(second_pair, first_pair);
+        let packed = vsriq_n_u8::<4>(all_four, all_four);
+        let narrowed = vshrn_n_u16::<4>(vreinterpretq_u16_u8(packed));
+        vget_lane_u64::<0>(vreinterpret_u64_u8(narrowed))
     }
 }
 
@@ -220,6 +267,29 @@ mod tests {
             let mut tags = [1u8; 32];
             tags[lane] = 42;
             assert_eq!(match_row_tags32(&tags, 42), 1u32 << lane);
+        }
+    }
+
+    #[test]
+    fn combines_four_quarters_for_64_lanes() {
+        for lane in 0..64usize {
+            let mut tags = [1u8; 64];
+            tags[lane] = 42;
+            assert_eq!(match_row_tags64(&tags, 42), 1u64 << lane);
+            assert_eq!(match_row_tags64_by_quarters(&tags, 42), 1u64 << lane);
+        }
+        let mut state = 0x2468_ACE1u32;
+        for _ in 0..1000 {
+            let mut tags = [0u8; 64];
+            for tag in tags.iter_mut() {
+                *tag = (next_pseudo_random_number(&mut state) & 7) as u8;
+            }
+            for target in 0..8u8 {
+                assert_eq!(
+                    match_row_tags64(&tags, target),
+                    match_row_tags64_by_quarters(&tags, target)
+                );
+            }
         }
     }
 

@@ -567,8 +567,8 @@ mod tests {
 
     #[test]
     fn level_one_output_is_unchanged() {
-        const GOLDEN_LEVEL_ONE_HASH: u64 = 0x0170_6775_76fb_72c8;
-        const GOLDEN_LEVEL_ONE_LENGTH: usize = 2_262_579;
+        const GOLDEN_LEVEL_ONE_HASH: u64 = 0x2f06_611c_7565_c97c;
+        const GOLDEN_LEVEL_ONE_LENGTH: usize = 2_793_047;
 
         let input = std::fs::read(
             "/Users/josorio/github/phenological/ionic/crates/parser/data/mzml/small.pwiz.1.1.mzML",

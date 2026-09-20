@@ -6,6 +6,8 @@ pub(crate) mod block_presplitter;
 pub(crate) mod block_splitter;
 #[cfg(feature = "compression")]
 pub(crate) mod block_writer;
+#[cfg(feature = "compression")]
+pub(crate) mod literal_buffer;
 pub(crate) mod literals;
 #[cfg(feature = "compression")]
 pub(crate) mod literals_writer;

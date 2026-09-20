@@ -5,6 +5,7 @@ use alloc::vec::Vec;
 use crate::block::block_splitter;
 use crate::{
     block::{
+        literal_buffer::LiteralBuffer,
         literals_writer::{LiteralsHints, write_literals},
         sequence_record::SequenceRecord,
         sequence_writer::{SequenceEncodeTables, write_sequences},
@@ -48,19 +49,16 @@ pub(crate) fn write_block(
     let saved_huffman_table = snapshot_huffman_table(&workspace.huffman_table);
     let saved_sequence_tables = workspace.sequence_tables.snapshot();
 
-    let (sequence_count, tail_literal_count) = workspace.match_finder.find_sequences(
-        input,
-        block_start,
-        &mut workspace.sequences,
-        &mut workspace.repeat_offsets,
-    );
-
-    let literal_count = collect_literals(
-        block_content,
-        &workspace.sequences[..sequence_count],
-        tail_literal_count,
-        &mut workspace.literals,
-    );
+    let (sequence_count, literal_count) = {
+        let mut literals = LiteralBuffer::new(&mut workspace.literals);
+        workspace.match_finder.find_sequences(
+            input,
+            block_start,
+            &mut workspace.sequences,
+            &mut literals,
+            &mut workspace.repeat_offsets,
+        )
+    };
 
     let table_reuse_allowed = block_start != 0;
 
@@ -148,7 +146,7 @@ fn commit_single_block(
     saved_sequence_tables: SequenceEncodeTables,
     literal_counts: Option<&[u32; 256]>,
 ) -> Result<usize, EncodeError> {
-    let allow_quick_raw = workspace.level_parameters.strategy == Strategy::Fast;
+    let allow_quick_raw = workspace.level_parameters.strategy != Strategy::Ultra2;
     let compressed_body_length = write_compressed_block_body(
         &workspace.literals[..literal_count],
         &workspace.sequences[..sequence_count],
@@ -240,8 +238,8 @@ fn write_block_as_split_pieces(
             true
         };
 
-        let allow_quick_raw = workspace.level_parameters.strategy == Strategy::Fast;
-        let body_length = write_compressed_block_body(
+        let allow_quick_raw = workspace.level_parameters.strategy != Strategy::Ultra2;
+            let body_length = write_compressed_block_body(
             &workspace.literals[piece_literal_start..piece_literal_end],
             &workspace.sequences[sequence_start..sequence_end],
             &mut workspace.block_scratch,
@@ -324,41 +322,6 @@ fn write_rle_block(
     Ok(total_length)
 }
 
-fn collect_literals(
-    input: &[u8],
-    sequences: &[SequenceRecord],
-    tail_literal_count: usize,
-    literals: &mut [u8],
-) -> usize {
-    let mut input_position = 0usize;
-    let mut literal_position = 0usize;
-
-    for sequence in sequences {
-        let literal_length = sequence.literal_length as usize;
-        let literal_end = literal_position + literal_length;
-        if literal_end + 16 <= literals.len() && input_position + literal_length + 16 <= input.len()
-        {
-            unsafe {
-                crate::simd::copy_bytes::copy_bytes_overshoot_unchecked(
-                    input.as_ptr().add(input_position),
-                    literals.as_mut_ptr().add(literal_position),
-                    literal_length,
-                );
-            }
-        } else {
-            literals[literal_position..literal_end]
-                .copy_from_slice(&input[input_position..input_position + literal_length]);
-        }
-        literal_position = literal_end;
-        input_position += literal_length + sequence.match_length as usize;
-    }
-
-    let literal_end = literal_position + tail_literal_count;
-    literals[literal_position..literal_end]
-        .copy_from_slice(&input[input_position..input_position + tail_literal_count]);
-    literal_end
-}
-
 #[allow(clippy::too_many_arguments)]
 fn write_compressed_block_body(
     literals: &[u8],
@@ -387,7 +350,8 @@ fn write_compressed_block_body(
     let sequences_output = output
         .get_mut(literals_length..)
         .ok_or(EncodeError::OutputTooSmall)?;
-    let sequences_length = write_sequences(sequences, sequences_output, sequence_tables)?;
+    let sequences_length =
+        write_sequences(sequences, sequences_output, sequence_tables, allow_quick_raw)?;
     Ok(literals_length + sequences_length)
 }
 

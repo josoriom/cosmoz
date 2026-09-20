@@ -61,8 +61,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 `Compressor::new` gives a `Compressor<Bytes>`; `Compressor::to(file, ..)` gives a `Compressor<File>`. Same for `Decompressor`.
 
-Without `std` use `Compressor::new` / `Decompressor::new` with `write` and `finish`; with `std` also `Compressor::to` / `Decompressor::from` which implement `io::Write` / `io::Read`.
-
 ```rust
 use cosmoz::{CompressOptions, Compressor, DecompressOptions, Decompressor};
 
@@ -90,28 +88,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### **std**
 
-`Compressor::to` and `Decompressor::from` do the same over any `std::io::Write`/`std::io::Read`, such as a file:
+`Compressor::to` and `Decompressor::from` do the same over any `std::io::Write`/`std::io::Read`, such as a file. Here a compressed file is read, decompressed and written back compressed at another level:
 
 ```rust
 use cosmoz::{CompressOptions, Compressor, DecompressOptions, Decompressor};
 use std::io::{Read, Write};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let path = std::env::temp_dir().join("cosmoz_readme.zst");
-    let data = b"some bytes to compress".repeat(100);
+    let file = std::fs::File::open("data.zst")?;
+    let mut decompressor = Decompressor::from(file, &DecompressOptions::default())?;
+    let mut data = Vec::new();
+    decompressor.read_to_end(&mut data)?;
 
-    let file = std::fs::File::create(&path)?;
-    let mut compressor = Compressor::to(file, &CompressOptions::default())?;
+    let file = std::fs::File::create("data_copy.zst")?;
+    let options = CompressOptions { level: 22, ..Default::default() };
+    let mut compressor = Compressor::to(file, &options)?;
     compressor.write_all(&data)?;
     compressor.finish()?;
 
-    let file = std::fs::File::open(&path)?;
-    let mut decompressor = Decompressor::from(file, &DecompressOptions::default())?;
-    let mut unpacked = Vec::new();
-    decompressor.read_to_end(&mut unpacked)?;
-
-    assert_eq!(unpacked, data);
-    std::fs::remove_file(&path)?;
     Ok(())
 }
 ```

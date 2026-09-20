@@ -234,7 +234,7 @@ mod tests {
         let mut counts = [0u32; 256];
         count_symbols(input, &mut counts);
         let mut table = HuffmanEncodeTable::new();
-        build_huffman_encode_table(&counts, &mut table).unwrap();
+        build_huffman_encode_table(&counts, &mut table, crate::entropy::huffman_decode_table::MAX_HUFFMAN_BITS).unwrap();
         table
     }
 
@@ -337,7 +337,7 @@ mod tests {
             }
 
             let mut table = HuffmanEncodeTable::new();
-            build_huffman_encode_table(&counts, &mut table).unwrap();
+            build_huffman_encode_table(&counts, &mut table, crate::entropy::huffman_decode_table::MAX_HUFFMAN_BITS).unwrap();
 
             let input_length = random.next_range(5001);
             let mut input = Vec::with_capacity(input_length);

@@ -1,9 +1,9 @@
 use crate::block::{
-    repeat_offsets::RepeatOffsets, sequence_codes::MAX_MATCH_LENGTH,
-    sequence_record::SequenceRecord,
+    literal_buffer::LiteralBuffer, repeat_offsets::RepeatOffsets,
+    sequence_codes::MAX_MATCH_LENGTH, sequence_record::SequenceRecord,
 };
 use crate::levels::{MatchFinder, level_table::LevelParameters};
-use crate::simd::row_tag_match::{match_row_tags16, match_row_tags32};
+use crate::simd::row_tag_match::{match_row_tags16, match_row_tags32, match_row_tags64};
 
 const TAG_BITS: u32 = 8;
 const HASH_READ_SIZE: usize = 8;
@@ -15,7 +15,10 @@ const UPDATE_SKIP_THRESHOLD: usize = 384;
 const UPDATE_MATCH_START_POSITIONS: usize = 96;
 const UPDATE_MATCH_END_POSITIONS: usize = 32;
 const SHORTEST_MATCH: usize = 4;
-const MAX_ROW_ENTRIES: usize = 32;
+const MIN_ROW_LOG: u8 = 4;
+const MAX_ROW_LOG: u8 = 6;
+const MAX_ROW_ENTRIES: usize = 1 << MAX_ROW_LOG;
+const POSITIONS_PER_PREFETCH: usize = 32;
 
 const HASH_PRIME_FOUR: u64 = 0x9E37_79B1_85EB_CA87;
 const HASH_PRIME_FIVE: u64 = 0x00CF_1BBC_DCBB;
@@ -34,6 +37,7 @@ pub(crate) struct Lazy2Finder<'tables> {
     search_attempts: usize,
     next_to_insert: usize,
     hash_cache: [u32; HASH_CACHE_SIZE],
+    candidates: [u32; MAX_ROW_ENTRIES],
     lazy_skipping: bool,
     base: u32,
     last_input_length: usize,
@@ -46,11 +50,7 @@ struct Found {
 }
 
 fn row_log_for(parameters: LevelParameters) -> u32 {
-    if parameters.window_log >= 22 && parameters.hash_log >= 22 {
-        5
-    } else {
-        4
-    }
+    parameters.search_log.clamp(MIN_ROW_LOG, MAX_ROW_LOG) as u32
 }
 
 fn tag_bytes_from_words(words: &mut [u32]) -> &mut [u8] {
@@ -124,6 +124,7 @@ impl<'tables> Lazy2Finder<'tables> {
             search_attempts: (1usize << parameters.search_log.min(31)).min(row_entries),
             next_to_insert: 0,
             hash_cache: [0; HASH_CACHE_SIZE],
+            candidates: [0; MAX_ROW_ENTRIES],
             lazy_skipping: false,
             base: 0,
             last_input_length: 0,
@@ -155,6 +156,13 @@ impl<'tables> Lazy2Finder<'tables> {
         debug_assert!(row_base + self.row_mask < self.tags.len());
         unsafe {
             prefetch_read(self.positions.as_ptr().add(row_base) as *const u8);
+            if self.row_mask >= POSITIONS_PER_PREFETCH {
+                prefetch_read(
+                    self.positions
+                        .as_ptr()
+                        .add(row_base + POSITIONS_PER_PREFETCH) as *const u8,
+                );
+            }
             prefetch_read(self.tags.as_ptr().add(row_base));
         }
     }
@@ -230,12 +238,20 @@ impl<'tables> Lazy2Finder<'tables> {
 
     #[inline(always)]
     fn rotated_match_mask(&self, row_base: usize, tag: u8, head: usize) -> u64 {
-        if self.row_mask == 15 {
-            let tags: &[u8; 16] = self.tags[row_base..row_base + 16].try_into().unwrap();
-            match_row_tags16(tags, tag).rotate_right(head as u32) as u64
-        } else {
-            let tags: &[u8; 32] = self.tags[row_base..row_base + 32].try_into().unwrap();
-            match_row_tags32(tags, tag).rotate_right(head as u32) as u64
+        let head = head as u32;
+        match self.row_mask {
+            15 => {
+                let tags: &[u8; 16] = self.tags[row_base..row_base + 16].try_into().unwrap();
+                match_row_tags16(tags, tag).rotate_right(head) as u64
+            }
+            31 => {
+                let tags: &[u8; 32] = self.tags[row_base..row_base + 32].try_into().unwrap();
+                match_row_tags32(tags, tag).rotate_right(head) as u64
+            }
+            _ => {
+                let tags: &[u8; 64] = self.tags[row_base..row_base + 64].try_into().unwrap();
+                match_row_tags64(tags, tag).rotate_right(head)
+            }
         }
     }
 
@@ -256,7 +272,6 @@ impl<'tables> Lazy2Finder<'tables> {
         let mut matches = self.rotated_match_mask(row_base, hash as u8, head);
         let lowest_valid = position.saturating_sub(1usize << self.window_log);
 
-        let mut candidates = [0u32; MAX_ROW_ENTRIES];
         let mut candidate_count = 0usize;
         let mut attempts_left = self.search_attempts;
         while matches != 0 && attempts_left > 0 {
@@ -267,14 +282,11 @@ impl<'tables> Lazy2Finder<'tables> {
             }
             let candidate = unsafe { *self.positions.get_unchecked(row_base + slot) }
                 .wrapping_sub(self.base) as usize;
-            if candidate < lowest_valid {
+            if candidate < lowest_valid || candidate >= position {
                 break;
             }
-            if candidate >= position {
-                continue;
-            }
             prefetch_read(unsafe { input.as_ptr().add(candidate) });
-            candidates[candidate_count] = candidate as u32;
+            self.candidates[candidate_count] = candidate as u32;
             candidate_count += 1;
             attempts_left -= 1;
         }
@@ -287,7 +299,7 @@ impl<'tables> Lazy2Finder<'tables> {
             length: SHORTEST_MATCH - 1,
             offset_base: 0,
         };
-        for &candidate in &candidates[..candidate_count] {
+        for &candidate in &self.candidates[..candidate_count] {
             let candidate = candidate as usize;
             let probe = best.length - 3;
             let plausible = unsafe {
@@ -332,6 +344,7 @@ impl<'tables> Lazy2Finder<'tables> {
         input: &[u8],
         block_start: usize,
         sequences: &mut [SequenceRecord],
+        literals: &mut LiteralBuffer<'_>,
         repeat_offsets: &mut RepeatOffsets,
     ) -> (usize, usize) {
         debug_assert!(block_start + INPUT_TAIL_RESERVE < input.len());
@@ -441,6 +454,7 @@ impl<'tables> Lazy2Finder<'tables> {
             };
 
             let literal_length = (start - anchor) as u32;
+            literals.add(input, anchor, literal_length as usize);
             sequences[sequence_count] = SequenceRecord {
                 literal_length,
                 match_length: match_length as u32,
@@ -473,7 +487,8 @@ impl<'tables> Lazy2Finder<'tables> {
             }
         }
 
-        (sequence_count, input.len() - anchor)
+        literals.add(input, anchor, input.len() - anchor);
+        (sequence_count, literals.count())
     }
 }
 
@@ -515,6 +530,7 @@ impl MatchFinder for Lazy2Finder<'_> {
         input: &[u8],
         block_start: usize,
         sequences: &mut [SequenceRecord],
+        literals: &mut LiteralBuffer<'_>,
         repeat_offsets: &mut RepeatOffsets,
     ) -> (usize, usize) {
         let block_length = input.len() - block_start;
@@ -523,9 +539,12 @@ impl MatchFinder for Lazy2Finder<'_> {
             || self.positions.is_empty()
             || block_start + INPUT_TAIL_RESERVE >= input.len()
         {
-            return (0, block_length);
+            literals.add(input, block_start, block_length);
+            return (0, literals.count());
         }
-        unsafe { self.find_sequences_unchecked(input, block_start, sequences, repeat_offsets) }
+        unsafe {
+            self.find_sequences_unchecked(input, block_start, sequences, literals, repeat_offsets)
+        }
     }
 }
 
@@ -538,6 +557,30 @@ mod tests {
         let hash_length = 1usize << parameters.hash_log;
         let chain_length = 1usize << parameters.chain_log;
         (vec![u32::MAX; hash_length], vec![0u32; chain_length])
+    }
+
+    fn get_tail_literal_count(sequences: &[SequenceRecord], literal_count: usize) -> usize {
+        literal_count
+            - sequences
+                .iter()
+                .map(|sequence| sequence.literal_length as usize)
+                .sum::<usize>()
+    }
+
+    fn find_sequences_with_literals(
+        finder: &mut impl MatchFinder,
+        input: &[u8],
+        block_start: usize,
+        sequences: &mut [SequenceRecord],
+        repeat_offsets: &mut RepeatOffsets,
+    ) -> (usize, usize, Vec<u8>) {
+        let mut collected = vec![0u8; input.len() + 32];
+        let mut literals = LiteralBuffer::new(&mut collected);
+        let (sequence_count, literal_count) =
+            finder.find_sequences(input, block_start, sequences, &mut literals, repeat_offsets);
+        let tail_literal_count = get_tail_literal_count(&sequences[..sequence_count], literal_count);
+        collected.truncate(literal_count);
+        (sequence_count, tail_literal_count, collected)
     }
 
     fn next_pseudo_random_number(state: &mut u32) -> u32 {
@@ -634,8 +677,8 @@ mod tests {
                 let mut decoder_history = RepeatOffsets::new();
                 let mut sequences = vec![SequenceRecord::default(); input.len() / 2 + 4];
 
-                let (sequence_count, tail_literal_count) =
-                    finder.find_sequences(&input, 0, &mut sequences, &mut repeat_offsets);
+                let (sequence_count, tail_literal_count, _) =
+            find_sequences_with_literals(&mut finder, &input, 0, &mut sequences, &mut repeat_offsets);
 
                 let covered = resolve_and_verify_sequences(
                     &input,

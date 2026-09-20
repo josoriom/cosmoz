@@ -1,5 +1,8 @@
 use crate::{
-    block::{repeat_offsets::RepeatOffsets, sequence_record::SequenceRecord},
+    block::{
+        literal_buffer::LiteralBuffer, repeat_offsets::RepeatOffsets,
+        sequence_record::SequenceRecord,
+    },
     levels::{
         MatchFinder,
         level_table::{self, LevelParameters},
@@ -79,21 +82,23 @@ impl MatchFinder for FastFinder {
         input: &[u8],
         block_start: usize,
         sequences: &mut [SequenceRecord],
+        literals: &mut LiteralBuffer<'_>,
         repeat_offsets: &mut RepeatOffsets,
     ) -> (usize, usize) {
         debug_assert!(block_start <= input.len());
 
         let block_length = input.len() - block_start;
         if input.len() > u32::MAX as usize || block_length <= READ_SIZE {
-            return (0, block_length);
+            literals.add(input, block_start, block_length);
+            return (0, literals.count());
         }
 
         unsafe {
             match self.hashed_bytes {
-                5 => self.search::<5>(input, block_start, sequences, repeat_offsets),
-                6 => self.search::<6>(input, block_start, sequences, repeat_offsets),
-                7 => self.search::<7>(input, block_start, sequences, repeat_offsets),
-                _ => self.search::<4>(input, block_start, sequences, repeat_offsets),
+                5 => self.search::<5>(input, block_start, sequences, literals, repeat_offsets),
+                6 => self.search::<6>(input, block_start, sequences, literals, repeat_offsets),
+                7 => self.search::<7>(input, block_start, sequences, literals, repeat_offsets),
+                _ => self.search::<4>(input, block_start, sequences, literals, repeat_offsets),
             }
         }
     }
@@ -106,6 +111,7 @@ impl FastFinder {
         input: &[u8],
         block_start: usize,
         sequences: &mut [SequenceRecord],
+        literals: &mut LiteralBuffer<'_>,
         repeat_offsets: &mut RepeatOffsets,
     ) -> (usize, usize) {
         let window_size = 1usize << self.window_log;
@@ -129,6 +135,7 @@ impl FastFinder {
             sequences,
             count: 0,
             literal_start: block_start,
+            literals,
             repeat_offsets,
         };
 
@@ -225,7 +232,7 @@ impl FastFinder {
                         found.start + found.known_length,
                     )
                 };
-            list.add(found.start, found.source, match_length);
+            list.add(input, found.start, found.source, match_length);
             position = found.start + match_length;
 
             if position <= search_end {
@@ -244,7 +251,8 @@ impl FastFinder {
             }
         }
 
-        (list.count, input_end - list.literal_start)
+        list.add_remaining_literals(input);
+        (list.count, list.literals.count())
     }
 }
 
@@ -266,22 +274,25 @@ impl Repeats {
     }
 }
 
-struct SequenceList<'list> {
+struct SequenceList<'list, 'collected> {
     sequences: &'list mut [SequenceRecord],
     count: usize,
     literal_start: usize,
+    literals: &'list mut LiteralBuffer<'collected>,
     repeat_offsets: &'list mut RepeatOffsets,
 }
 
-impl SequenceList<'_> {
+impl SequenceList<'_, '_> {
     #[inline(always)]
     fn is_full(&self) -> bool {
         self.count == self.sequences.len()
     }
 
     #[inline(always)]
-    fn add(&mut self, start: usize, source: usize, match_length: usize) {
+    fn add(&mut self, input: &[u8], start: usize, source: usize, match_length: usize) {
         let literal_length = (start - self.literal_start) as u32;
+        self.literals
+            .add(input, self.literal_start, literal_length as usize);
         let offset = (start - source) as u32;
         self.sequences[self.count] = SequenceRecord {
             literal_length,
@@ -291,13 +302,19 @@ impl SequenceList<'_> {
         self.count += 1;
         self.literal_start = start + match_length;
     }
+
+    fn add_remaining_literals(&mut self, input: &[u8]) {
+        self.literals
+            .add(input, self.literal_start, input.len() - self.literal_start);
+        self.literal_start = input.len();
+    }
 }
 
 #[inline(always)]
 unsafe fn add_second_repeats<const HASHED_BYTES: usize>(
     input: &[u8],
     table: &mut PositionTable<'_, HASHED_BYTES>,
-    list: &mut SequenceList<'_>,
+    list: &mut SequenceList<'_, '_>,
     repeats: &mut Repeats,
     mut position: usize,
     search_end: usize,
@@ -315,7 +332,7 @@ unsafe fn add_second_repeats<const HASHED_BYTES: usize>(
             };
         repeats.swap();
         unsafe { table.save_position_at(input, position) };
-        list.add(position, source, match_length);
+        list.add(input, position, source, match_length);
         position += match_length;
     }
     position
@@ -476,6 +493,30 @@ unsafe fn read_byte(input: &[u8], position: usize) -> u8 {
 mod tests {
     use super::*;
 
+    fn get_tail_literal_count(sequences: &[SequenceRecord], literal_count: usize) -> usize {
+        literal_count
+            - sequences
+                .iter()
+                .map(|sequence| sequence.literal_length as usize)
+                .sum::<usize>()
+    }
+
+    fn find_sequences_with_literals(
+        finder: &mut impl MatchFinder,
+        input: &[u8],
+        block_start: usize,
+        sequences: &mut [SequenceRecord],
+        repeat_offsets: &mut RepeatOffsets,
+    ) -> (usize, usize, Vec<u8>) {
+        let mut collected = vec![0u8; input.len() + 32];
+        let mut literals = LiteralBuffer::new(&mut collected);
+        let (sequence_count, literal_count) =
+            finder.find_sequences(input, block_start, sequences, &mut literals, repeat_offsets);
+        let tail_literal_count = get_tail_literal_count(&sequences[..sequence_count], literal_count);
+        collected.truncate(literal_count);
+        (sequence_count, tail_literal_count, collected)
+    }
+
     fn next_pseudo_random_number(state: &mut u32) -> u32 {
         *state ^= *state << 13;
         *state ^= *state >> 17;
@@ -601,8 +642,8 @@ mod tests {
         let mut decoder_history = RepeatOffsets::new();
         let mut sequences = [SequenceRecord::default(); 8];
 
-        let (sequence_count, tail_literal_count) =
-            finder.find_sequences(&input, 0, &mut sequences, &mut repeat_offsets);
+        let (sequence_count, tail_literal_count, _) =
+            find_sequences_with_literals(&mut finder, &input, 0, &mut sequences, &mut repeat_offsets);
 
         assert_eq!(sequence_count, 1);
         let (_, covered, resolved_offsets) = resolve_and_verify_sequences(
@@ -631,8 +672,8 @@ mod tests {
         let mut sequences = vec![SequenceRecord::default(); 4096];
 
         let first_block_input = &input[..50_000];
-        let (first_sequence_count, first_tail_literal_count) =
-            finder.find_sequences(first_block_input, 0, &mut sequences, &mut repeat_offsets);
+        let (first_sequence_count, first_tail_literal_count, _) =
+            find_sequences_with_literals(&mut finder, &first_block_input, 0, &mut sequences, &mut repeat_offsets);
         let (_, first_covered, _) = resolve_and_verify_sequences(
             first_block_input,
             0,
@@ -641,8 +682,8 @@ mod tests {
         );
         assert_eq!(first_covered + first_tail_literal_count, 50_000);
 
-        let (second_sequence_count, second_tail_literal_count) =
-            finder.find_sequences(&input, 50_000, &mut sequences, &mut repeat_offsets);
+        let (second_sequence_count, second_tail_literal_count, _) =
+            find_sequences_with_literals(&mut finder, &input, 50_000, &mut sequences, &mut repeat_offsets);
         let (reaches_into_first_block, second_covered, _) = resolve_and_verify_sequences(
             &input,
             50_000,
@@ -674,8 +715,8 @@ mod tests {
         let mut decoder_history = RepeatOffsets::new();
         let mut sequences = [SequenceRecord::default(); 2];
 
-        let (sequence_count, tail_literal_count) =
-            finder.find_sequences(&input, 0, &mut sequences, &mut repeat_offsets);
+        let (sequence_count, tail_literal_count, _) =
+            find_sequences_with_literals(&mut finder, &input, 0, &mut sequences, &mut repeat_offsets);
 
         assert!(sequence_count <= 2);
         let (_, covered, resolved_offsets) = resolve_and_verify_sequences(
@@ -699,8 +740,8 @@ mod tests {
         let mut decoder_history = RepeatOffsets::new();
         let mut sequences = vec![SequenceRecord::default(); 4096];
 
-        let (sequence_count, tail_literal_count) =
-            finder.find_sequences(&input, 0, &mut sequences, &mut repeat_offsets);
+        let (sequence_count, tail_literal_count, _) =
+            find_sequences_with_literals(&mut finder, &input, 0, &mut sequences, &mut repeat_offsets);
         let (_, covered, _) = resolve_and_verify_sequences(
             &input,
             0,
@@ -728,8 +769,8 @@ mod tests {
                 let mut decoder_history = RepeatOffsets::new();
                 let mut sequences = vec![SequenceRecord::default(); input.len() / 2 + 4];
 
-                let (sequence_count, tail_literal_count) =
-                    finder.find_sequences(&input, 0, &mut sequences, &mut repeat_offsets);
+                let (sequence_count, tail_literal_count, _) =
+            find_sequences_with_literals(&mut finder, &input, 0, &mut sequences, &mut repeat_offsets);
                 let (_, covered, _) = resolve_and_verify_sequences(
                     &input,
                     0,
@@ -754,6 +795,38 @@ mod tests {
     }
 
     #[test]
+    fn collected_literals_are_the_bytes_between_the_matches() {
+        let mut input = Vec::new();
+        while input.len() < 20_000 {
+            input.extend_from_slice(b"the cat sat on the mat ");
+            input.extend(generate_pseudo_random_bytes(7, input.len() as u32));
+        }
+
+        let mut finder = get_finder_for_input(input.len());
+        let mut repeat_offsets = RepeatOffsets::new();
+        let mut sequences = vec![SequenceRecord::default(); 4096];
+
+        let (sequence_count, _, collected) = find_sequences_with_literals(
+            &mut finder,
+            &input,
+            0,
+            &mut sequences,
+            &mut repeat_offsets,
+        );
+
+        let mut expected = Vec::new();
+        let mut cursor = 0usize;
+        for sequence in &sequences[..sequence_count] {
+            let literal_end = cursor + sequence.literal_length as usize;
+            expected.extend_from_slice(&input[cursor..literal_end]);
+            cursor = literal_end + sequence.match_length as usize;
+        }
+        expected.extend_from_slice(&input[cursor..]);
+
+        assert_eq!(collected, expected);
+    }
+
+    #[test]
     fn stale_positions_from_an_earlier_input_are_never_used() {
         let first_input = generate_pseudo_random_bytes(10_000, 0xABCD_0001);
         let second_input = generate_pseudo_random_bytes(10_000, 0xABCD_0002);
@@ -761,13 +834,13 @@ mod tests {
         let mut finder = get_finder_for_input(first_input.len());
         let mut repeat_offsets = RepeatOffsets::new();
         let mut sequences = vec![SequenceRecord::default(); 4096];
-        finder.find_sequences(&first_input, 0, &mut sequences, &mut repeat_offsets);
+        find_sequences_with_literals(&mut finder, &first_input, 0, &mut sequences, &mut repeat_offsets);
 
         finder.reset(second_input.len());
         let mut repeat_offsets = RepeatOffsets::new();
         let mut decoder_history = RepeatOffsets::new();
-        let (sequence_count, tail_literal_count) =
-            finder.find_sequences(&second_input, 0, &mut sequences, &mut repeat_offsets);
+        let (sequence_count, tail_literal_count, _) =
+            find_sequences_with_literals(&mut finder, &second_input, 0, &mut sequences, &mut repeat_offsets);
         let (_, covered, _) = resolve_and_verify_sequences(
             &second_input,
             0,
