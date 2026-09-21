@@ -17,16 +17,16 @@ authors = [
 crate-type = ["rlib"]
 
 [features]
-default = ["checksum"]
+default = ["std"]
 checksum = []
 compression = []
 std = []
-wasm-exports = []
+wasm-exports = ["std"]
 
 [dependencies]
 
 [dev-dependencies]
-cosmoz = { path = ".", features = ["std", "compression"] }
+cosmoz = { path = ".", default-features = false, features = ["std", "compression"] }
 
 [profile.release]
 opt-level = 3

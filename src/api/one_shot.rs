@@ -27,29 +27,10 @@ pub fn compressed_size(input: &[u8]) -> Result<usize, DecodeError> {
 }
 
 #[cfg(feature = "compression")]
-pub fn compress_into(
-    input: &[u8],
-    output: &mut [u8],
-    options: &CompressOptions,
-    encoder: &mut Encoder,
-) -> Result<usize, EncodeError> {
-    crate::encoder::compress(input, output, &options.to_internal(), &mut encoder.0)
-}
-
-pub fn decompress_into(
-    input: &[u8],
-    output: &mut [u8],
-    options: &DecompressOptions,
-    decoder: &mut Decoder,
-) -> Result<usize, DecodeError> {
-    crate::decoder::decompress_checked(input, output, &mut decoder.0, options.verify_checksum)
-}
-
-#[cfg(feature = "compression")]
 pub fn compress_with(input: &[u8], options: &CompressOptions) -> Result<alloc::vec::Vec<u8>, EncodeError> {
     let mut encoder = Encoder::new(options)?;
-    let mut output = alloc::vec![0u8; max_compressed_size(input.len(), options)];
-    let written = compress_into(input, &mut output, options, &mut encoder)?;
+    let mut output = alloc::vec![0u8; encoder.max_compressed_size(input.len())];
+    let written = encoder.compress_into(input, &mut output)?;
     output.truncate(written);
     Ok(output)
 }
@@ -61,36 +42,44 @@ pub fn compress(input: &[u8]) -> Result<alloc::vec::Vec<u8>, EncodeError> {
 
 pub(crate) fn allocate_and_decode(
     input: &[u8],
-    options: &DecompressOptions,
     decoder: &mut Decoder,
 ) -> Result<alloc::vec::Vec<u8>, DecodeError> {
+    let max_output_size = decoder.max_output_size();
+    let max_bound = crate::decoder::get_max_output_size(input.len());
+
     if let Some(size) = decompressed_size(input)? {
-        let size = size as usize;
-        if let Some(max_output_size) = options.max_output_size
+        let size = usize::try_from(size).map_err(|_| DecodeError::OutputTooLarge)?;
+        if size > max_bound {
+            return Err(DecodeError::OutputTooLarge);
+        }
+        if let Some(max_output_size) = max_output_size
             && size > max_output_size
         {
             return Err(DecodeError::OutputTooLarge);
         }
         let mut output = alloc::vec![0u8; size];
-        let written = decompress_into(input, &mut output, options, decoder)?;
+        let written = decoder.decompress_into(input, &mut output)?;
         output.truncate(written);
         return Ok(output);
     }
 
-    let mut capacity = (input.len() * 4).max(4096);
-    if let Some(max_output_size) = options.max_output_size {
+    let mut capacity = (input.len() * 4).max(4096).min(max_bound);
+    if let Some(max_output_size) = max_output_size {
         capacity = capacity.min(max_output_size);
     }
 
     loop {
         let mut output = alloc::vec![0u8; capacity];
-        match decompress_into(input, &mut output, options, decoder) {
+        match decoder.decompress_into(input, &mut output) {
             Ok(written) => {
                 output.truncate(written);
                 return Ok(output);
             }
             Err(DecodeError::OutputTooSmall) => {
-                if let Some(max_output_size) = options.max_output_size
+                if capacity >= max_bound {
+                    return Err(DecodeError::OutputTooLarge);
+                }
+                if let Some(max_output_size) = max_output_size
                     && capacity >= max_output_size
                 {
                     return Err(DecodeError::OutputTooLarge);
@@ -99,7 +88,8 @@ pub(crate) fn allocate_and_decode(
                     Some(next) => next,
                     None => return Err(DecodeError::OutputTooLarge),
                 };
-                if let Some(max_output_size) = options.max_output_size {
+                capacity = capacity.min(max_bound);
+                if let Some(max_output_size) = max_output_size {
                     capacity = capacity.min(max_output_size);
                 }
             }
@@ -112,8 +102,8 @@ pub fn decompress_with(
     input: &[u8],
     options: &DecompressOptions,
 ) -> Result<alloc::vec::Vec<u8>, DecodeError> {
-    let mut decoder = Decoder::new();
-    allocate_and_decode(input, options, &mut decoder)
+    let mut decoder = Decoder::new(options);
+    allocate_and_decode(input, &mut decoder)
 }
 
 pub fn decompress(input: &[u8]) -> Result<alloc::vec::Vec<u8>, DecodeError> {

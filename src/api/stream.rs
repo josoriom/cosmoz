@@ -10,7 +10,7 @@ use super::options::DecompressOptions;
 
 use super::workspace::Decoder;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Bytes;
+pub struct RawBytes;
 
 #[cfg(feature = "compression")]
 fn build_stream_encoder(
@@ -20,20 +20,20 @@ fn build_stream_encoder(
 }
 
 #[cfg(feature = "compression")]
-pub struct Compressor<W = Bytes> {
+pub struct Compressor<W = RawBytes> {
     inner: crate::stream_encoder::StreamEncoder,
     #[allow(dead_code)]
-    sink: W,
+    output: W,
     #[allow(dead_code)]
     pending: alloc::vec::Vec<u8>,
 }
 
 #[cfg(feature = "compression")]
-impl Compressor<Bytes> {
+impl Compressor<RawBytes> {
     pub fn new(options: &CompressOptions) -> Result<Self, EncodeError> {
         Ok(Self {
             inner: build_stream_encoder(options)?,
-            sink: Bytes,
+            output: RawBytes,
             pending: alloc::vec::Vec::new(),
         })
     }
@@ -42,56 +42,65 @@ impl Compressor<Bytes> {
         self.inner.write(input, output)
     }
 
-    pub fn finish(&mut self, output: &mut alloc::vec::Vec<u8>) -> Result<(), EncodeError> {
+    pub fn finish(mut self, output: &mut alloc::vec::Vec<u8>) -> Result<(), EncodeError> {
         self.inner.finish(output)
     }
 }
 
 #[cfg(all(feature = "compression", feature = "std"))]
 impl<W: std::io::Write> Compressor<W> {
-    pub fn to(sink: W, options: &CompressOptions) -> std::io::Result<Compressor<W>> {
+    pub fn write_to(output: W, options: &CompressOptions) -> std::io::Result<Compressor<W>> {
         let inner = build_stream_encoder(options)
             .map_err(|error| std::io::Error::other(alloc::format!("cosmoz compress start: {error}")))?;
         Ok(Compressor {
             inner,
-            sink,
+            output,
             pending: alloc::vec::Vec::new(),
         })
     }
 
+    fn send_pending(&mut self) -> std::io::Result<()> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+        self.output.write_all(&self.pending)?;
+        self.pending.clear();
+        Ok(())
+    }
+
     pub fn finish(mut self) -> std::io::Result<W> {
+        self.send_pending()?;
         self.inner
             .finish(&mut self.pending)
             .map_err(|error| std::io::Error::other(alloc::format!("cosmoz compress finish: {error}")))?;
-        self.sink.write_all(&self.pending)?;
-        self.sink.flush()?;
-        Ok(self.sink)
+        self.send_pending()?;
+        self.output.flush()?;
+        Ok(self.output)
     }
 }
 
 #[cfg(all(feature = "compression", feature = "std"))]
 impl<W: std::io::Write> std::io::Write for Compressor<W> {
     fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.send_pending()?;
         self.inner
             .write(buffer, &mut self.pending)
             .map_err(|error| std::io::Error::other(alloc::format!("cosmoz compress write: {error}")))?;
-        let result = self.sink.write_all(&self.pending);
-        self.pending.clear();
-        result?;
+        let _ = self.send_pending();
         Ok(buffer.len())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self.sink.flush()
+        self.send_pending()?;
+        self.output.flush()
     }
 }
 
-pub struct Decompressor<R = Bytes> {
-    options: DecompressOptions,
-    decoder: alloc::boxed::Box<Decoder>,
+pub struct Decompressor<R = RawBytes> {
+    decoder: Decoder,
     pending: alloc::vec::Vec<u8>,
     #[allow(dead_code)]
-    source: R,
+    input: R,
     #[allow(dead_code)]
     input_buffer: alloc::vec::Vec<u8>,
     #[allow(dead_code)]
@@ -99,7 +108,7 @@ pub struct Decompressor<R = Bytes> {
     #[allow(dead_code)]
     output_position: usize,
     #[allow(dead_code)]
-    source_done: bool,
+    input_done: bool,
     #[allow(dead_code)]
     finished: bool,
 }
@@ -127,7 +136,7 @@ impl<R> Decompressor<R> {
             }
 
             let frame = &self.pending[consumed..consumed + frame_length];
-            let decoded = super::one_shot::allocate_and_decode(frame, &self.options, &mut self.decoder)?;
+            let decoded = super::one_shot::allocate_and_decode(frame, &mut self.decoder)?;
             output.extend_from_slice(&decoded);
             consumed += frame_length;
         }
@@ -153,17 +162,16 @@ impl<R> Decompressor<R> {
     }
 }
 
-impl Decompressor<Bytes> {
+impl Decompressor<RawBytes> {
     pub fn new(options: &DecompressOptions) -> Result<Self, DecodeError> {
         Ok(Self {
-            options: *options,
-            decoder: Decoder::new(),
+            decoder: Decoder::new(options),
             pending: alloc::vec::Vec::new(),
-            source: Bytes,
+            input: RawBytes,
             input_buffer: alloc::vec::Vec::new(),
             output_buffer: alloc::vec::Vec::new(),
             output_position: 0,
-            source_done: false,
+            input_done: false,
             finished: false,
         })
     }
@@ -172,23 +180,22 @@ impl Decompressor<Bytes> {
         self.push_input(input, output)
     }
 
-    pub fn finish(&mut self, output: &mut alloc::vec::Vec<u8>) -> Result<(), DecodeError> {
+    pub fn finish(mut self, output: &mut alloc::vec::Vec<u8>) -> Result<(), DecodeError> {
         self.finish_frames(output)
     }
 }
 
 #[cfg(feature = "std")]
 impl<R: std::io::Read> Decompressor<R> {
-    pub fn from(source: R, options: &DecompressOptions) -> std::io::Result<Decompressor<R>> {
+    pub fn read_from(input: R, options: &DecompressOptions) -> std::io::Result<Decompressor<R>> {
         Ok(Decompressor {
-            options: *options,
-            decoder: Decoder::new(),
+            decoder: Decoder::new(options),
             pending: alloc::vec::Vec::new(),
-            source,
+            input,
             input_buffer: alloc::vec![0u8; DECOMPRESSOR_INPUT_CHUNK_SIZE],
             output_buffer: alloc::vec::Vec::new(),
             output_position: 0,
-            source_done: false,
+            input_done: false,
             finished: false,
         })
     }
@@ -213,7 +220,7 @@ impl<R: std::io::Read> std::io::Read for Decompressor<R> {
             self.output_buffer.clear();
             self.output_position = 0;
 
-            if self.source_done {
+            if self.input_done {
                 let mut output_buffer = core::mem::take(&mut self.output_buffer);
                 let result = self.finish_frames(&mut output_buffer);
                 self.output_buffer = output_buffer;
@@ -225,9 +232,9 @@ impl<R: std::io::Read> std::io::Read for Decompressor<R> {
                 continue;
             }
 
-            let read_length = self.source.read(&mut self.input_buffer)?;
+            let read_length = self.input.read(&mut self.input_buffer)?;
             if read_length == 0 {
-                self.source_done = true;
+                self.input_done = true;
                 continue;
             }
 
@@ -297,11 +304,11 @@ mod tests {
     fn compressor_to_a_sink_round_trips_with_decompressor_from_a_source() {
         let input = build_text(300_000);
 
-        let mut compressor = Compressor::to(alloc::vec::Vec::new(), &CompressOptions::default()).unwrap();
+        let mut compressor = Compressor::write_to(alloc::vec::Vec::new(), &CompressOptions::default()).unwrap();
         compressor.write_all(&input).unwrap();
         let compressed = compressor.finish().unwrap();
 
-        let mut decompressor = Decompressor::from(compressed.as_slice(), &DecompressOptions::default()).unwrap();
+        let mut decompressor = Decompressor::read_from(compressed.as_slice(), &DecompressOptions::default()).unwrap();
         let mut decoded = alloc::vec::Vec::new();
         decompressor.read_to_end(&mut decoded).unwrap();
         assert_eq!(decoded, input);
@@ -312,7 +319,7 @@ mod tests {
         let input = build_text(300_000);
         let compressed = compress_all(&input);
 
-        let mut decompressor = Decompressor::from(SmallReads(&compressed, 0), &DecompressOptions::default()).unwrap();
+        let mut decompressor = Decompressor::read_from(SmallReads(&compressed, 0), &DecompressOptions::default()).unwrap();
         let mut decoded = alloc::vec::Vec::new();
         decompressor.read_to_end(&mut decoded).unwrap();
         assert_eq!(decoded, input);
@@ -328,5 +335,59 @@ mod tests {
             self.1 += take;
             Ok(take)
         }
+    }
+
+    struct FlakySink {
+        data: alloc::vec::Vec<u8>,
+        failures_left: usize,
+    }
+
+    impl std::io::Write for FlakySink {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            self.data.extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn write_all(&mut self, buffer: &[u8]) -> std::io::Result<()> {
+            if self.failures_left > 0 {
+                self.failures_left -= 1;
+                return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+            }
+            self.data.extend_from_slice(buffer);
+            Ok(())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn compressor_keeps_pending_bytes_when_the_sink_is_interrupted() {
+        let input = build_text(300_000);
+
+        let sink = FlakySink {
+            data: alloc::vec::Vec::new(),
+            failures_left: 2,
+        };
+        let mut compressor = Compressor::write_to(sink, &CompressOptions::default()).unwrap();
+
+        for chunk in input.chunks(4001) {
+            loop {
+                match compressor.write_all(chunk) {
+                    Ok(()) => break,
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(error) => panic!("unexpected write error: {error}"),
+                }
+            }
+        }
+        let sink = compressor.finish().unwrap();
+        let compressed = sink.data;
+
+        let mut decompressor = Decompressor::new(&DecompressOptions::default()).unwrap();
+        let mut decoded = alloc::vec::Vec::new();
+        decompressor.write(&compressed, &mut decoded).unwrap();
+        decompressor.finish(&mut decoded).unwrap();
+        assert_eq!(decoded, input);
     }
 }

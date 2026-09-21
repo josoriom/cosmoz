@@ -121,7 +121,7 @@ impl XxHash64 {
     }
 }
 
-#[cfg(any(feature = "compression", feature = "wasm-exports"))]
+#[cfg(any(test, feature = "compression"))]
 pub(crate) fn hash_bytes(input: &[u8], seed: u64) -> u64 {
     let mut hasher = XxHash64::new(seed);
     hasher.update(input);

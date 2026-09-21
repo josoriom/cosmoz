@@ -13,7 +13,7 @@ impl Default for CompressOptions {
     fn default() -> Self {
         Self {
             level: DEFAULT_LEVEL,
-            checksum: true,
+            checksum: cfg!(feature = "checksum"),
         }
     }
 }
@@ -34,10 +34,11 @@ pub struct DecompressOptions {
     pub max_output_size: Option<usize>,
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for DecompressOptions {
     fn default() -> Self {
         Self {
-            verify_checksum: true,
+            verify_checksum: cfg!(feature = "checksum"),
             max_output_size: None,
         }
     }

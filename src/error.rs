@@ -1,4 +1,5 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DecodeError {
     InputTooShort,
     OutputTooSmall,
@@ -17,6 +18,7 @@ pub enum DecodeError {
     BadOffset,
     CorruptBitstream,
     ChecksumMismatch,
+    ChecksumNotSupported,
 }
 
 impl DecodeError {
@@ -43,6 +45,9 @@ impl DecodeError {
             DecodeError::BadOffset => "a sequence references an offset outside the decoded history",
             DecodeError::CorruptBitstream => "the compressed bitstream is corrupt",
             DecodeError::ChecksumMismatch => "the decompressed content does not match its checksum",
+            DecodeError::ChecksumNotSupported => {
+                "the frame has a checksum but cosmoz was built without the checksum feature"
+            }
         }
     }
 }

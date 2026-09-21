@@ -1,8 +1,10 @@
+#[cfg(any(test, feature = "checksum"))]
+use crate::frame::frame_header::ZSTD_CHECKSUM_LENGTH;
 use crate::{
     encode_error::EncodeError,
     frame::{
         block_header::{BLOCK_HEADER_LENGTH, BlockType, MAX_BLOCK_SIZE},
-        frame_header::{ZSTD_CHECKSUM_LENGTH, ZSTD_MAGIC_NUMBER},
+        frame_header::ZSTD_MAGIC_NUMBER,
     },
 };
 
@@ -77,6 +79,7 @@ pub(crate) fn write_block_header(
     Ok(BLOCK_HEADER_LENGTH)
 }
 
+#[cfg(any(test, feature = "checksum"))]
 pub(crate) fn write_checksum(output: &mut [u8], hash: u64) -> Result<usize, EncodeError> {
     if output.len() < ZSTD_CHECKSUM_LENGTH {
         return Err(EncodeError::OutputTooSmall);

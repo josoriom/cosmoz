@@ -10,12 +10,6 @@ use crate::{
     encoder::{CompressOptions, EncodeWorkspace, compress, get_max_compressed_size},
 };
 
-#[cfg(not(feature = "std"))]
-#[panic_handler]
-fn handle_panic(_panic_info: &core::panic::PanicInfo) -> ! {
-    loop {}
-}
-
 struct SingleThreadCell<T>(UnsafeCell<T>);
 
 unsafe impl<T> Sync for SingleThreadCell<T> {}
@@ -242,6 +236,7 @@ pub(crate) extern "C" fn cosmoz_run_self_tests() -> i64 {
     run_kernel!(crate::simd::count_matching_bytes::run_self_tests);
     #[cfg(feature = "compression")]
     run_kernel!(crate::simd::histogram::run_self_tests);
+    #[cfg(feature = "compression")]
     run_kernel!(crate::simd::row_tag_match::run_self_tests);
     0
 }

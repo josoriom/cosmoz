@@ -805,7 +805,7 @@ The quick brown fox jumps over the lazy dog. "
         for length in (1..400usize).chain([4096, 70_000, 200_000]) {
             let mut input = xorshift_bytes(length, length as u32);
             for index in 0..length {
-                if index % 7 != 0 && index >= 1 + length % 5 {
+                if index % 7 != 0 && index > length % 5 {
                     input[index] = input[index - 1 - length % 5];
                 }
             }

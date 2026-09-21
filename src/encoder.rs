@@ -30,7 +30,7 @@ pub(crate) struct CompressOptions {
 impl CompressOptions {
     pub(crate) const fn zstd() -> Self {
         Self {
-            with_checksum: true,
+            with_checksum: cfg!(feature = "checksum"),
             level: 1,
         }
     }
@@ -566,6 +566,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "checksum")]
     fn level_one_output_is_unchanged() {
         const GOLDEN_LEVEL_ONE_HASH: u64 = 0x2f06_611c_7565_c97c;
         const GOLDEN_LEVEL_ONE_LENGTH: usize = 2_793_047;
@@ -672,6 +673,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "checksum")]
     fn level_nine_zstd_frame_header_window_log_is_twenty_two() {
         let options = CompressOptions {
             with_checksum: true,
@@ -695,6 +697,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "checksum")]
     fn level_nine_zstd_frame_round_trips_through_our_decoder_and_the_cli() {
         let options = CompressOptions {
             with_checksum: true,

@@ -168,7 +168,9 @@ impl StreamEncoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::decoder::{DecodeWorkspace, decompress, get_frame_compressed_size};
+    #[cfg(feature = "checksum")]
+    use crate::decoder::get_frame_compressed_size;
+    use crate::decoder::{DecodeWorkspace, decompress};
 
     fn build_mixed_input(length: usize) -> Vec<u8> {
         let mut state = 0x2468_ace1u32;
@@ -212,6 +214,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "checksum")]
     fn pieces_of_any_size_round_trip_across_segments() {
         let input = build_mixed_input(STREAM_SEGMENT_SIZE + 700_000);
         let frame = encode_in_pieces(&input, 1, true);
@@ -227,6 +230,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "checksum")]
     fn empty_stream_is_a_valid_frame() {
         let mut encoder = StreamEncoder::new(9, true).unwrap();
         let mut output = Vec::new();

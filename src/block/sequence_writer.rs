@@ -104,10 +104,7 @@ pub(crate) fn write_sequences(
     let (literal_length_mode, _) = pick_table_mode(
         &literal_length_counts,
         sequence_count,
-        LITERAL_LENGTH_CODE_COUNT - 1,
-        &LITERAL_LENGTH_DEFAULT_COUNTS,
-        LITERAL_LENGTH_ACCURACY_LOG,
-        9,
+        &LITERAL_LENGTH_TABLE_SETTINGS,
         &mut tables.literal_length,
         tables.literal_length_mode,
         quick_choice,
@@ -117,10 +114,7 @@ pub(crate) fn write_sequences(
     let (offset_mode, _) = pick_table_mode(
         &offset_counts,
         sequence_count,
-        OFFSET_CODE_COUNT - 1,
-        &OFFSET_DEFAULT_COUNTS,
-        OFFSET_ACCURACY_LOG,
-        8,
+        &OFFSET_TABLE_SETTINGS,
         &mut tables.offset,
         tables.offset_mode,
         quick_choice,
@@ -130,10 +124,7 @@ pub(crate) fn write_sequences(
     let (match_length_mode, _) = pick_table_mode(
         &match_length_counts,
         sequence_count,
-        MATCH_LENGTH_CODE_COUNT - 1,
-        &MATCH_LENGTH_DEFAULT_COUNTS,
-        MATCH_LENGTH_ACCURACY_LOG,
-        9,
+        &MATCH_LENGTH_TABLE_SETTINGS,
         &mut tables.match_length,
         tables.match_length_mode,
         quick_choice,
@@ -246,18 +237,46 @@ fn write_table_description(
     }
 }
 
+struct TableSettings {
+    max_symbol: usize,
+    predefined_counts: &'static [i16],
+    predefined_log: usize,
+    max_log: usize,
+}
+
+const LITERAL_LENGTH_TABLE_SETTINGS: TableSettings = TableSettings {
+    max_symbol: LITERAL_LENGTH_CODE_COUNT - 1,
+    predefined_counts: &LITERAL_LENGTH_DEFAULT_COUNTS,
+    predefined_log: LITERAL_LENGTH_ACCURACY_LOG,
+    max_log: 9,
+};
+
+const OFFSET_TABLE_SETTINGS: TableSettings = TableSettings {
+    max_symbol: OFFSET_CODE_COUNT - 1,
+    predefined_counts: &OFFSET_DEFAULT_COUNTS,
+    predefined_log: OFFSET_ACCURACY_LOG,
+    max_log: 8,
+};
+
+const MATCH_LENGTH_TABLE_SETTINGS: TableSettings = TableSettings {
+    max_symbol: MATCH_LENGTH_CODE_COUNT - 1,
+    predefined_counts: &MATCH_LENGTH_DEFAULT_COUNTS,
+    predefined_log: MATCH_LENGTH_ACCURACY_LOG,
+    max_log: 9,
+};
+
 fn pick_table_mode(
     counts: &[u32],
     total: usize,
-    max_symbol: usize,
-    predefined_counts: &[i16],
-    predefined_log: usize,
-    max_log: usize,
+    settings: &TableSettings,
     table: &mut FseEncodeTable,
     previous_mode: TableMode,
     quick_choice: bool,
 ) -> Result<(TableMode, usize), EncodeError> {
-    debug_assert_eq!(counts.len(), max_symbol + 1);
+    debug_assert_eq!(counts.len(), settings.max_symbol + 1);
+
+    let predefined_counts = settings.predefined_counts;
+    let predefined_log = settings.predefined_log;
 
     if let Some(symbol) = single_distinct_symbol(counts) {
         build_rle_encode_table(symbol, table);
@@ -277,7 +296,7 @@ fn pick_table_mode(
         }
     }
 
-    let accuracy_log = pick_accuracy_log(total, max_used_symbol + 1, max_log);
+    let accuracy_log = pick_accuracy_log(total, max_used_symbol + 1, settings.max_log);
     let mut normalized_counts = [0i16; MAX_SYMBOL_COUNT];
     normalize_counts(
         counts,

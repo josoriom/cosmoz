@@ -5,7 +5,7 @@ use crate::{
     block::block_decoder::{BlockWorkspace, decode_block, decode_compressed_block_pair},
     error::DecodeError,
     frame::{
-        block_header::{BLOCK_HEADER_LENGTH, BlockHeader, BlockType, read_block_header},
+        block_header::{BLOCK_HEADER_LENGTH, BlockHeader, BlockType, MAX_BLOCK_SIZE, read_block_header},
         frame_header::{
             FrameHeader, get_skippable_frame_length, is_skippable_frame, read_frame_header,
         },
@@ -247,13 +247,17 @@ pub(crate) fn get_decompressed_size(input: &[u8]) -> Result<Option<u64>, DecodeE
     Ok(Some(total_size))
 }
 
+pub(crate) fn get_max_output_size(input_length: usize) -> usize {
+    input_length.saturating_mul(MAX_BLOCK_SIZE / (BLOCK_HEADER_LENGTH + 1))
+}
+
 #[cfg(any(test, all(target_arch = "wasm32", feature = "wasm-exports")))]
 pub(crate) fn decompress(
     input: &[u8],
     output: &mut [u8],
     workspace: &mut DecodeWorkspace,
 ) -> Result<usize, DecodeError> {
-    decompress_checked(input, output, workspace, true)
+    decompress_checked(input, output, workspace, cfg!(feature = "checksum"))
 }
 
 pub(crate) fn decompress_checked(
@@ -319,6 +323,9 @@ fn decode_frame(
         let checksum_length = header.checksum_length();
         if input.len() < input_position + checksum_length {
             return Err(DecodeError::InputTooShort);
+        }
+        if header.has_checksum && verify_checksum {
+            return Err(DecodeError::ChecksumNotSupported);
         }
         input_position += checksum_length;
     }
@@ -395,6 +402,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "checksum")]
     fn decompresses_a_real_frame_with_checksum() {
         let mut workspace = DecodeWorkspace::new_boxed();
         let mut output = [0u8; 1024];
@@ -408,6 +416,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "checksum")]
     fn rejects_flipped_checksum_byte() {
         let mut input = TEXT_500_WITH_CHECKSUM;
         let last_index = input.len() - 1;
@@ -426,7 +435,8 @@ mod tests {
         input[20] ^= 0xFF;
         let mut workspace = DecodeWorkspace::new_boxed();
         let mut output = [0u8; 1024];
-        assert!(decompress(&input, &mut output, &mut workspace).is_err());
+        let result = decompress(&input, &mut output, &mut workspace);
+        assert_eq!(result.is_err(), cfg!(feature = "checksum"));
     }
 
     #[test]
@@ -460,6 +470,25 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "checksum"))]
+    fn reports_checksum_not_supported_when_verifying_is_requested() {
+        let mut workspace = DecodeWorkspace::new_boxed();
+        let mut output = [0u8; 1024];
+        assert_eq!(
+            decompress_checked(&TEXT_500_WITH_CHECKSUM, &mut output, &mut workspace, true),
+            Err(DecodeError::ChecksumNotSupported)
+        );
+
+        let mut workspace = DecodeWorkspace::new_boxed();
+        let mut output = [0u8; 1024];
+        let written =
+            decompress_checked(&TEXT_500_WITH_CHECKSUM, &mut output, &mut workspace, false).unwrap();
+        assert_eq!(written, 500);
+        assert_eq!(&output[..written], expected_text().as_slice());
+    }
+
+    #[test]
+    #[cfg(feature = "checksum")]
     fn skips_a_skippable_frame_before_a_real_frame() {
         let mut input = Vec::new();
         input.extend_from_slice(&[0x50, 0x2A, 0x4D, 0x18]);
@@ -475,6 +504,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "checksum")]
     fn decompresses_two_frames_back_to_back() {
         let mut input = Vec::new();
         input.extend_from_slice(&TEXT_500_WITH_CHECKSUM);

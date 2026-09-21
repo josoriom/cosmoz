@@ -3,4 +3,5 @@ pub(crate) mod copy_bytes;
 pub(crate) mod count_matching_bytes;
 #[cfg(feature = "compression")]
 pub(crate) mod histogram;
+#[cfg(feature = "compression")]
 pub(crate) mod row_tag_match;

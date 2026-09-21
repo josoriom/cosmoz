@@ -88,7 +88,9 @@ impl MatchFinder for FastFinder {
         debug_assert!(block_start <= input.len());
 
         let block_length = input.len() - block_start;
-        if input.len() > u32::MAX as usize || block_length <= READ_SIZE {
+        let window_start = input.len().saturating_sub(1usize << self.window_log);
+        if input.len() > u32::MAX as usize || block_length <= READ_SIZE || block_start < window_start
+        {
             literals.add(input, block_start, block_length);
             return (0, literals.count());
         }
@@ -673,7 +675,7 @@ mod tests {
 
         let first_block_input = &input[..50_000];
         let (first_sequence_count, first_tail_literal_count, _) =
-            find_sequences_with_literals(&mut finder, &first_block_input, 0, &mut sequences, &mut repeat_offsets);
+            find_sequences_with_literals(&mut finder, first_block_input, 0, &mut sequences, &mut repeat_offsets);
         let (_, first_covered, _) = resolve_and_verify_sequences(
             first_block_input,
             0,
