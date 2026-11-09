@@ -99,8 +99,8 @@ fn match_row_tags16_neon(tags: &[u8; 16], target: u8) -> u16 {
 #[cfg(feature = "compression")]
 fn match_row_tags64_neon(tags: &[u8; 64], target: u8) -> u64 {
     use core::arch::aarch64::{
-        vceqq_u8, vdupq_n_u8, vget_lane_u64, vld4q_u8, vreinterpret_u64_u8,
-        vreinterpretq_u16_u8, vshrn_n_u16, vsriq_n_u8,
+        vceqq_u8, vdupq_n_u8, vget_lane_u64, vld4q_u8, vreinterpret_u64_u8, vreinterpretq_u16_u8,
+        vshrn_n_u16, vsriq_n_u8,
     };
 
     unsafe {

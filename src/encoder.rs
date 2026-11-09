@@ -1,10 +1,10 @@
-use crate::block::sequences::TableMode;
 use crate::{
     block::{
         block_writer::write_block,
         repeat_offsets::RepeatOffsets,
         sequence_record::{MAX_SEQUENCES_PER_BLOCK, SequenceRecord},
         sequence_writer::SequenceEncodeTables,
+        sequences::TableMode,
     },
     encode_error::EncodeError,
     entropy::{fse_encode_table::FseEncodeTable, huffman_encode_table::HuffmanEncodeTable},

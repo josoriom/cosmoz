@@ -1,14 +1,11 @@
 use alloc::boxed::Box;
 
-use crate::error::DecodeError;
-
-#[cfg(feature = "compression")]
-use crate::encode_error::EncodeError;
-
 #[cfg(feature = "compression")]
 use super::options::CompressOptions;
-
 use super::options::DecompressOptions;
+#[cfg(feature = "compression")]
+use crate::encode_error::EncodeError;
+use crate::error::DecodeError;
 
 #[cfg(feature = "compression")]
 pub struct Encoder {
@@ -31,7 +28,12 @@ impl Encoder {
     }
 
     pub fn compress_into(&mut self, input: &[u8], output: &mut [u8]) -> Result<usize, EncodeError> {
-        crate::encoder::compress(input, output, &self.options.to_internal(), &mut self.workspace)
+        crate::encoder::compress(
+            input,
+            output,
+            &self.options.to_internal(),
+            &mut self.workspace,
+        )
     }
 }
 
@@ -52,7 +54,16 @@ impl Decoder {
         self.options.max_output_size
     }
 
-    pub fn decompress_into(&mut self, input: &[u8], output: &mut [u8]) -> Result<usize, DecodeError> {
-        crate::decoder::decompress_checked(input, output, &mut self.workspace, self.options.verify_checksum)
+    pub fn decompress_into(
+        &mut self,
+        input: &[u8],
+        output: &mut [u8],
+    ) -> Result<usize, DecodeError> {
+        crate::decoder::decompress_checked(
+            input,
+            output,
+            &mut self.workspace,
+            self.options.verify_checksum,
+        )
     }
 }

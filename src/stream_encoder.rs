@@ -108,7 +108,11 @@ impl StreamEncoder {
         if self.header_written {
             return Ok(());
         }
-        let window_log = self.workspace.level_parameters.window_log.min(MAX_OFFSET_LOG);
+        let window_log = self
+            .workspace
+            .level_parameters
+            .window_log
+            .min(MAX_OFFSET_LOG);
         let mut header = [0u8; MAX_FRAME_HEADER_LENGTH];
         let header_length = write_frame_header(&mut header, None, window_log, self.with_checksum)?;
         output.extend_from_slice(&header[..header_length]);
@@ -175,7 +179,11 @@ mod tests {
     fn build_mixed_input(length: usize) -> Vec<u8> {
         let mut state = 0x2468_ace1u32;
         let mut bytes = Vec::with_capacity(length);
-        let words: [&[u8]; 3] = [b"<cvParam accession=\"MS:1000511\" value=\"", b"\"/>\n", b"<binary>"];
+        let words: [&[u8]; 3] = [
+            b"<cvParam accession=\"MS:1000511\" value=\"",
+            b"\"/>\n",
+            b"<binary>",
+        ];
         while bytes.len() < length {
             state ^= state << 13;
             state ^= state >> 17;
@@ -236,6 +244,9 @@ mod tests {
         let mut output = Vec::new();
         encoder.finish(&mut output).unwrap();
         assert_eq!(decode(&output, 0), Vec::<u8>::new());
-        assert_eq!(encoder.write(b"late", &mut output), Err(EncodeError::BadOptions));
+        assert_eq!(
+            encoder.write(b"late", &mut output),
+            Err(EncodeError::BadOptions)
+        );
     }
 }

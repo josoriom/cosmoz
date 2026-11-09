@@ -1,13 +1,19 @@
-use crate::algorithms::binary_tree_matcher::{
-    BinaryTreeMatcher, INPUT_TAIL_RESERVE, LONGEST_OPTIMAL_MATCH, MAX_HASH3_LOG, MatchCandidate,
-};
-use crate::algorithms::symbol_prices::SymbolPrices;
-use crate::block::{
-    literal_buffer::LiteralBuffer, repeat_offsets::RepeatOffsets, sequence_record::SequenceRecord,
-};
-use crate::levels::{
-    MatchFinder,
-    level_table::{LevelParameters, get_level_parameters_for_input_length},
+use crate::{
+    algorithms::{
+        binary_tree_matcher::{
+            BinaryTreeMatcher, INPUT_TAIL_RESERVE, LONGEST_OPTIMAL_MATCH, MAX_HASH3_LOG,
+            MatchCandidate,
+        },
+        symbol_prices::SymbolPrices,
+    },
+    block::{
+        literal_buffer::LiteralBuffer, repeat_offsets::RepeatOffsets,
+        sequence_record::SequenceRecord,
+    },
+    levels::{
+        MatchFinder,
+        level_table::{LevelParameters, get_level_parameters_for_input_length},
+    },
 };
 
 pub(crate) const OPTIMAL_TABLE_LENGTH: usize = LONGEST_OPTIMAL_MATCH as usize + 3;
@@ -288,7 +294,8 @@ impl<'tables> Ultra2Finder<'tables> {
                         } else {
                             SHORTEST_MATCH
                         };
-                        let start_price = base_price + prices.get_match_start_price(candidate.offset_base);
+                        let start_price =
+                            base_price + prices.get_match_start_price(candidate.offset_base);
                         let mut length = candidate.length;
                         while length >= start_length {
                             let node_position = current + length as usize;
@@ -472,7 +479,8 @@ mod tests {
         let mut literals = LiteralBuffer::new(&mut collected);
         let (sequence_count, literal_count) =
             finder.find_sequences(input, block_start, sequences, &mut literals, repeat_offsets);
-        let tail_literal_count = get_tail_literal_count(&sequences[..sequence_count], literal_count);
+        let tail_literal_count =
+            get_tail_literal_count(&sequences[..sequence_count], literal_count);
         collected.truncate(literal_count);
         (sequence_count, tail_literal_count, collected)
     }

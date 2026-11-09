@@ -1,18 +1,22 @@
 pub(crate) mod finder_tables;
 pub(crate) mod level_table;
 
-use crate::algorithms::fast::FastFinder;
-#[cfg(feature = "compression")]
-use crate::algorithms::lazy2::Lazy2Finder;
-#[cfg(feature = "compression")]
-use crate::algorithms::ultra2::Ultra2Finder;
-use crate::block::{
-    literal_buffer::LiteralBuffer, repeat_offsets::RepeatOffsets, sequence_record::SequenceRecord,
-};
 use finder_tables::TableStorage;
 use level_table::LevelParameters;
 #[cfg(feature = "compression")]
 use level_table::Strategy;
+
+#[cfg(feature = "compression")]
+use crate::algorithms::lazy2::Lazy2Finder;
+#[cfg(feature = "compression")]
+use crate::algorithms::ultra2::Ultra2Finder;
+use crate::{
+    algorithms::fast::FastFinder,
+    block::{
+        literal_buffer::LiteralBuffer, repeat_offsets::RepeatOffsets,
+        sequence_record::SequenceRecord,
+    },
+};
 
 pub(crate) const MAX_OFFSET_LOG: u8 = 22;
 

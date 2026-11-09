@@ -1,9 +1,11 @@
-use crate::block::sequence_codes::{
-    LITERAL_LENGTH_CODE_COUNT, MATCH_LENGTH_CODE_COUNT, MATCH_LENGTH_EXTRA_BITS, OFFSET_CODE_COUNT,
-    find_match_length_code, get_literal_length_code, get_literal_length_extra_bits,
-    get_match_length_code,
+use crate::{
+    block::sequence_codes::{
+        LITERAL_LENGTH_CODE_COUNT, MATCH_LENGTH_CODE_COUNT, MATCH_LENGTH_EXTRA_BITS,
+        OFFSET_CODE_COUNT, find_match_length_code, get_literal_length_code,
+        get_literal_length_extra_bits, get_match_length_code,
+    },
+    frame::block_header::MAX_BLOCK_SIZE,
 };
-use crate::frame::block_header::MAX_BLOCK_SIZE;
 
 const BIT_COST_MULTIPLIER: u32 = 1 << BIT_COST_ACCURACY;
 const BIT_COST_ACCURACY: u32 = 8;
@@ -204,8 +206,7 @@ impl SymbolPrices {
             return get_weight(match_length - MIN_MATCH_LENGTH) as i32;
         }
         let code = find_match_length_code(match_length) as usize;
-        (MATCH_LENGTH_EXTRA_BITS[code] as u32 * BIT_COST_MULTIPLIER
-            + self.match_length_sum_price
+        (MATCH_LENGTH_EXTRA_BITS[code] as u32 * BIT_COST_MULTIPLIER + self.match_length_sum_price
             - get_weight(self.match_length_frequencies[code])) as i32
     }
 

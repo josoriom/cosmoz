@@ -25,17 +25,23 @@ impl DecodeError {
     const fn message(self) -> &'static str {
         match self {
             DecodeError::InputTooShort => "the input ends before a complete frame could be read",
-            DecodeError::OutputTooSmall => "the output buffer is too small to hold the decompressed data",
+            DecodeError::OutputTooSmall => {
+                "the output buffer is too small to hold the decompressed data"
+            }
             DecodeError::OutputTooLarge => {
                 "the decompressed data would exceed the configured maximum output size"
             }
             DecodeError::TruncatedInput => "the input stream ended without a complete frame",
             DecodeError::BadMagicNumber => "the input does not start with a zstd frame signature",
-            DecodeError::BadFrameHeader => "the frame header is invalid or inconsistent with its content",
+            DecodeError::BadFrameHeader => {
+                "the frame header is invalid or inconsistent with its content"
+            }
             DecodeError::DictionaryNotSupported => {
                 "the frame uses a dictionary, which cosmoz does not support"
             }
-            DecodeError::WindowTooLarge => "the frame declares a window larger than cosmoz can allocate",
+            DecodeError::WindowTooLarge => {
+                "the frame declares a window larger than cosmoz can allocate"
+            }
             DecodeError::ReservedBlockType => "the frame uses a reserved block type",
             DecodeError::BlockTooLarge => "a block is larger than the maximum allowed block size",
             DecodeError::BadLiteralsHeader => "the literals section header is invalid",

@@ -1,9 +1,11 @@
-use crate::block::{
-    literal_buffer::LiteralBuffer, repeat_offsets::RepeatOffsets,
-    sequence_codes::MAX_MATCH_LENGTH, sequence_record::SequenceRecord,
+use crate::{
+    block::{
+        literal_buffer::LiteralBuffer, repeat_offsets::RepeatOffsets,
+        sequence_codes::MAX_MATCH_LENGTH, sequence_record::SequenceRecord,
+    },
+    levels::{MatchFinder, level_table::LevelParameters},
+    simd::row_tag_match::{match_row_tags16, match_row_tags32, match_row_tags64},
 };
-use crate::levels::{MatchFinder, level_table::LevelParameters};
-use crate::simd::row_tag_match::{match_row_tags16, match_row_tags32, match_row_tags64};
 
 const TAG_BITS: u32 = 8;
 const HASH_READ_SIZE: usize = 8;
@@ -578,7 +580,8 @@ mod tests {
         let mut literals = LiteralBuffer::new(&mut collected);
         let (sequence_count, literal_count) =
             finder.find_sequences(input, block_start, sequences, &mut literals, repeat_offsets);
-        let tail_literal_count = get_tail_literal_count(&sequences[..sequence_count], literal_count);
+        let tail_literal_count =
+            get_tail_literal_count(&sequences[..sequence_count], literal_count);
         collected.truncate(literal_count);
         (sequence_count, tail_literal_count, collected)
     }
@@ -677,8 +680,13 @@ mod tests {
                 let mut decoder_history = RepeatOffsets::new();
                 let mut sequences = vec![SequenceRecord::default(); input.len() / 2 + 4];
 
-                let (sequence_count, tail_literal_count, _) =
-            find_sequences_with_literals(&mut finder, &input, 0, &mut sequences, &mut repeat_offsets);
+                let (sequence_count, tail_literal_count, _) = find_sequences_with_literals(
+                    &mut finder,
+                    &input,
+                    0,
+                    &mut sequences,
+                    &mut repeat_offsets,
+                );
 
                 let covered = resolve_and_verify_sequences(
                     &input,

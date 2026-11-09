@@ -1,14 +1,9 @@
 #[cfg(feature = "compression")]
-use crate::encode_error::EncodeError;
-
-#[cfg(feature = "compression")]
 use super::options::CompressOptions;
-
+use super::{options::DecompressOptions, workspace::Decoder};
+#[cfg(feature = "compression")]
+use crate::encode_error::EncodeError;
 use crate::error::DecodeError;
-
-use super::options::DecompressOptions;
-
-use super::workspace::Decoder;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RawBytes;
 
@@ -38,7 +33,11 @@ impl Compressor<RawBytes> {
         })
     }
 
-    pub fn write(&mut self, input: &[u8], output: &mut alloc::vec::Vec<u8>) -> Result<(), EncodeError> {
+    pub fn write(
+        &mut self,
+        input: &[u8],
+        output: &mut alloc::vec::Vec<u8>,
+    ) -> Result<(), EncodeError> {
         self.inner.write(input, output)
     }
 
@@ -50,8 +49,9 @@ impl Compressor<RawBytes> {
 #[cfg(all(feature = "compression", feature = "std"))]
 impl<W: std::io::Write> Compressor<W> {
     pub fn write_to(output: W, options: &CompressOptions) -> std::io::Result<Compressor<W>> {
-        let inner = build_stream_encoder(options)
-            .map_err(|error| std::io::Error::other(alloc::format!("cosmoz compress start: {error}")))?;
+        let inner = build_stream_encoder(options).map_err(|error| {
+            std::io::Error::other(alloc::format!("cosmoz compress start: {error}"))
+        })?;
         Ok(Compressor {
             inner,
             output,
@@ -70,9 +70,9 @@ impl<W: std::io::Write> Compressor<W> {
 
     pub fn finish(mut self) -> std::io::Result<W> {
         self.send_pending()?;
-        self.inner
-            .finish(&mut self.pending)
-            .map_err(|error| std::io::Error::other(alloc::format!("cosmoz compress finish: {error}")))?;
+        self.inner.finish(&mut self.pending).map_err(|error| {
+            std::io::Error::other(alloc::format!("cosmoz compress finish: {error}"))
+        })?;
         self.send_pending()?;
         self.output.flush()?;
         Ok(self.output)
@@ -85,7 +85,9 @@ impl<W: std::io::Write> std::io::Write for Compressor<W> {
         self.send_pending()?;
         self.inner
             .write(buffer, &mut self.pending)
-            .map_err(|error| std::io::Error::other(alloc::format!("cosmoz compress write: {error}")))?;
+            .map_err(|error| {
+                std::io::Error::other(alloc::format!("cosmoz compress write: {error}"))
+            })?;
         let _ = self.send_pending();
         Ok(buffer.len())
     }
@@ -117,7 +119,10 @@ pub struct Decompressor<R = RawBytes> {
 const DECOMPRESSOR_INPUT_CHUNK_SIZE: usize = 64 * 1024;
 
 impl<R> Decompressor<R> {
-    fn drain_complete_frames(&mut self, output: &mut alloc::vec::Vec<u8>) -> Result<(), DecodeError> {
+    fn drain_complete_frames(
+        &mut self,
+        output: &mut alloc::vec::Vec<u8>,
+    ) -> Result<(), DecodeError> {
         let mut consumed = 0usize;
 
         loop {
@@ -147,7 +152,11 @@ impl<R> Decompressor<R> {
         Ok(())
     }
 
-    fn push_input(&mut self, input: &[u8], output: &mut alloc::vec::Vec<u8>) -> Result<(), DecodeError> {
+    fn push_input(
+        &mut self,
+        input: &[u8],
+        output: &mut alloc::vec::Vec<u8>,
+    ) -> Result<(), DecodeError> {
         self.pending.extend_from_slice(input);
         self.drain_complete_frames(output)
     }
@@ -176,7 +185,11 @@ impl Decompressor<RawBytes> {
         })
     }
 
-    pub fn write(&mut self, input: &[u8], output: &mut alloc::vec::Vec<u8>) -> Result<(), DecodeError> {
+    pub fn write(
+        &mut self,
+        input: &[u8],
+        output: &mut alloc::vec::Vec<u8>,
+    ) -> Result<(), DecodeError> {
         self.push_input(input, output)
     }
 
@@ -224,7 +237,9 @@ impl<R: std::io::Read> std::io::Read for Decompressor<R> {
                 let mut output_buffer = core::mem::take(&mut self.output_buffer);
                 let result = self.finish_frames(&mut output_buffer);
                 self.output_buffer = output_buffer;
-                result.map_err(|error| std::io::Error::other(alloc::format!("cosmoz decompress finish: {error}")))?;
+                result.map_err(|error| {
+                    std::io::Error::other(alloc::format!("cosmoz decompress finish: {error}"))
+                })?;
                 self.finished = true;
                 if self.output_buffer.is_empty() {
                     return Ok(0);
@@ -243,16 +258,19 @@ impl<R: std::io::Read> std::io::Read for Decompressor<R> {
             let result = self.push_input(&input_buffer[..read_length], &mut output_buffer);
             self.output_buffer = output_buffer;
             self.input_buffer = input_buffer;
-            result.map_err(|error| std::io::Error::other(alloc::format!("cosmoz decompress write: {error}")))?;
+            result.map_err(|error| {
+                std::io::Error::other(alloc::format!("cosmoz decompress write: {error}"))
+            })?;
         }
     }
 }
 
 #[cfg(all(test, feature = "compression", feature = "std"))]
 mod tests {
+    use std::io::{Read, Write};
+
     use super::*;
     use crate::CompressOptions;
-    use std::io::{Read, Write};
 
     fn build_text(length: usize) -> alloc::vec::Vec<u8> {
         let sentence = b"the quick brown fox jumps over the lazy dog. ";
@@ -297,18 +315,23 @@ mod tests {
         let mut decompressor = Decompressor::new(&DecompressOptions::default()).unwrap();
         let mut decoded = alloc::vec::Vec::new();
         let _ = decompressor.write(&compressed, &mut decoded);
-        assert_eq!(decompressor.finish(&mut decoded), Err(DecodeError::TruncatedInput));
+        assert_eq!(
+            decompressor.finish(&mut decoded),
+            Err(DecodeError::TruncatedInput)
+        );
     }
 
     #[test]
     fn compressor_to_a_sink_round_trips_with_decompressor_from_a_source() {
         let input = build_text(300_000);
 
-        let mut compressor = Compressor::write_to(alloc::vec::Vec::new(), &CompressOptions::default()).unwrap();
+        let mut compressor =
+            Compressor::write_to(alloc::vec::Vec::new(), &CompressOptions::default()).unwrap();
         compressor.write_all(&input).unwrap();
         let compressed = compressor.finish().unwrap();
 
-        let mut decompressor = Decompressor::read_from(compressed.as_slice(), &DecompressOptions::default()).unwrap();
+        let mut decompressor =
+            Decompressor::read_from(compressed.as_slice(), &DecompressOptions::default()).unwrap();
         let mut decoded = alloc::vec::Vec::new();
         decompressor.read_to_end(&mut decoded).unwrap();
         assert_eq!(decoded, input);
@@ -319,7 +342,9 @@ mod tests {
         let input = build_text(300_000);
         let compressed = compress_all(&input);
 
-        let mut decompressor = Decompressor::read_from(SmallReads(&compressed, 0), &DecompressOptions::default()).unwrap();
+        let mut decompressor =
+            Decompressor::read_from(SmallReads(&compressed, 0), &DecompressOptions::default())
+                .unwrap();
         let mut decoded = alloc::vec::Vec::new();
         decompressor.read_to_end(&mut decoded).unwrap();
         assert_eq!(decoded, input);

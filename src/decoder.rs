@@ -1,11 +1,15 @@
-use crate::block::repeat_offsets::RepeatOffsets;
 #[cfg(feature = "checksum")]
 use crate::hash::xxhash64::XxHash64;
 use crate::{
-    block::block_decoder::{BlockWorkspace, decode_block, decode_compressed_block_pair},
+    block::{
+        block_decoder::{BlockWorkspace, decode_block, decode_compressed_block_pair},
+        repeat_offsets::RepeatOffsets,
+    },
     error::DecodeError,
     frame::{
-        block_header::{BLOCK_HEADER_LENGTH, BlockHeader, BlockType, MAX_BLOCK_SIZE, read_block_header},
+        block_header::{
+            BLOCK_HEADER_LENGTH, BlockHeader, BlockType, MAX_BLOCK_SIZE, read_block_header,
+        },
         frame_header::{
             FrameHeader, get_skippable_frame_length, is_skippable_frame, read_frame_header,
         },
@@ -277,8 +281,13 @@ pub(crate) fn decompress_checked(
             continue;
         }
 
-        let (bytes_consumed, new_output_position) =
-            decode_frame(remaining_input, output, output_position, workspace, verify_checksum)?;
+        let (bytes_consumed, new_output_position) = decode_frame(
+            remaining_input,
+            output,
+            output_position,
+            workspace,
+            verify_checksum,
+        )?;
         input_position += bytes_consumed;
         output_position = new_output_position;
     }
@@ -482,7 +491,8 @@ mod tests {
         let mut workspace = DecodeWorkspace::new_boxed();
         let mut output = [0u8; 1024];
         let written =
-            decompress_checked(&TEXT_500_WITH_CHECKSUM, &mut output, &mut workspace, false).unwrap();
+            decompress_checked(&TEXT_500_WITH_CHECKSUM, &mut output, &mut workspace, false)
+                .unwrap();
         assert_eq!(written, 500);
         assert_eq!(&output[..written], expected_text().as_slice());
     }
@@ -531,7 +541,12 @@ mod tests {
 
     const COPY_SEQUENCE_COUNT: usize = 22;
 
-    fn write_raw_test_block(frame: &mut Vec<u8>, block_type: BlockType, payload: &[u8], is_last: bool) {
+    fn write_raw_test_block(
+        frame: &mut Vec<u8>,
+        block_type: BlockType,
+        payload: &[u8],
+        is_last: bool,
+    ) {
         let type_bits = match block_type {
             BlockType::Raw => 0,
             BlockType::Rle => 1,
@@ -620,7 +635,10 @@ mod tests {
     }
 
     fn find_zstd_cli() -> Option<std::path::PathBuf> {
-        let output = std::process::Command::new("which").arg("zstd").output().ok()?;
+        let output = std::process::Command::new("which")
+            .arg("zstd")
+            .output()
+            .ok()?;
         let path = String::from_utf8(output.stdout).ok()?;
         let path = path.trim();
         if output.status.success() && !path.is_empty() {
@@ -652,8 +670,10 @@ mod tests {
     }
 
     fn has_repeat_tables_after_a_block_without_sequences(frame: &[u8]) -> bool {
-        use crate::block::literals::read_literals_header;
-        use crate::block::sequences::{TableMode, read_sequences_header};
+        use crate::block::{
+            literals::read_literals_header,
+            sequences::{TableMode, read_sequences_header},
+        };
 
         let mut position = read_frame_header(frame).unwrap().header_length;
         let mut previous_block_had_no_sequences = false;

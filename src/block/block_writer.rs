@@ -239,7 +239,7 @@ fn write_block_as_split_pieces(
         };
 
         let allow_quick_raw = workspace.level_parameters.strategy != Strategy::Ultra2;
-            let body_length = write_compressed_block_body(
+        let body_length = write_compressed_block_body(
             &workspace.literals[piece_literal_start..piece_literal_end],
             &workspace.sequences[sequence_start..sequence_end],
             &mut workspace.block_scratch,
@@ -350,8 +350,12 @@ fn write_compressed_block_body(
     let sequences_output = output
         .get_mut(literals_length..)
         .ok_or(EncodeError::OutputTooSmall)?;
-    let sequences_length =
-        write_sequences(sequences, sequences_output, sequence_tables, allow_quick_raw)?;
+    let sequences_length = write_sequences(
+        sequences,
+        sequences_output,
+        sequence_tables,
+        allow_quick_raw,
+    )?;
     Ok(literals_length + sequences_length)
 }
 

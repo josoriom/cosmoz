@@ -11,7 +11,9 @@ pub enum EncodeError {
 impl EncodeError {
     const fn message(self) -> &'static str {
         match self {
-            EncodeError::OutputTooSmall => "the output buffer is too small to hold the compressed data",
+            EncodeError::OutputTooSmall => {
+                "the output buffer is too small to hold the compressed data"
+            }
             EncodeError::InputTooLarge => "the input is too large to compress with these options",
             EncodeError::BadOptions => {
                 "the compression options are invalid, such as a level cosmoz does not support"

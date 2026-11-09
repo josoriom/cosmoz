@@ -1,17 +1,11 @@
-use crate::error::DecodeError;
-
-#[cfg(feature = "compression")]
-use crate::encode_error::EncodeError;
-
 #[cfg(feature = "compression")]
 use super::options::CompressOptions;
-
-use super::options::DecompressOptions;
-
 #[cfg(feature = "compression")]
 use super::workspace::Encoder;
-
-use super::workspace::Decoder;
+use super::{options::DecompressOptions, workspace::Decoder};
+#[cfg(feature = "compression")]
+use crate::encode_error::EncodeError;
+use crate::error::DecodeError;
 
 #[cfg(feature = "compression")]
 pub fn max_compressed_size(input_length: usize, options: &CompressOptions) -> usize {
@@ -27,7 +21,10 @@ pub fn compressed_size(input: &[u8]) -> Result<usize, DecodeError> {
 }
 
 #[cfg(feature = "compression")]
-pub fn compress_with(input: &[u8], options: &CompressOptions) -> Result<alloc::vec::Vec<u8>, EncodeError> {
+pub fn compress_with(
+    input: &[u8],
+    options: &CompressOptions,
+) -> Result<alloc::vec::Vec<u8>, EncodeError> {
     let mut encoder = Encoder::new(options)?;
     let mut output = alloc::vec![0u8; encoder.max_compressed_size(input.len())];
     let written = encoder.compress_into(input, &mut output)?;

@@ -89,7 +89,9 @@ impl MatchFinder for FastFinder {
 
         let block_length = input.len() - block_start;
         let window_start = input.len().saturating_sub(1usize << self.window_log);
-        if input.len() > u32::MAX as usize || block_length <= READ_SIZE || block_start < window_start
+        if input.len() > u32::MAX as usize
+            || block_length <= READ_SIZE
+            || block_start < window_start
         {
             literals.add(input, block_start, block_length);
             return (0, literals.count());
@@ -514,7 +516,8 @@ mod tests {
         let mut literals = LiteralBuffer::new(&mut collected);
         let (sequence_count, literal_count) =
             finder.find_sequences(input, block_start, sequences, &mut literals, repeat_offsets);
-        let tail_literal_count = get_tail_literal_count(&sequences[..sequence_count], literal_count);
+        let tail_literal_count =
+            get_tail_literal_count(&sequences[..sequence_count], literal_count);
         collected.truncate(literal_count);
         (sequence_count, tail_literal_count, collected)
     }
@@ -644,8 +647,13 @@ mod tests {
         let mut decoder_history = RepeatOffsets::new();
         let mut sequences = [SequenceRecord::default(); 8];
 
-        let (sequence_count, tail_literal_count, _) =
-            find_sequences_with_literals(&mut finder, &input, 0, &mut sequences, &mut repeat_offsets);
+        let (sequence_count, tail_literal_count, _) = find_sequences_with_literals(
+            &mut finder,
+            &input,
+            0,
+            &mut sequences,
+            &mut repeat_offsets,
+        );
 
         assert_eq!(sequence_count, 1);
         let (_, covered, resolved_offsets) = resolve_and_verify_sequences(
@@ -674,8 +682,13 @@ mod tests {
         let mut sequences = vec![SequenceRecord::default(); 4096];
 
         let first_block_input = &input[..50_000];
-        let (first_sequence_count, first_tail_literal_count, _) =
-            find_sequences_with_literals(&mut finder, first_block_input, 0, &mut sequences, &mut repeat_offsets);
+        let (first_sequence_count, first_tail_literal_count, _) = find_sequences_with_literals(
+            &mut finder,
+            first_block_input,
+            0,
+            &mut sequences,
+            &mut repeat_offsets,
+        );
         let (_, first_covered, _) = resolve_and_verify_sequences(
             first_block_input,
             0,
@@ -684,8 +697,13 @@ mod tests {
         );
         assert_eq!(first_covered + first_tail_literal_count, 50_000);
 
-        let (second_sequence_count, second_tail_literal_count, _) =
-            find_sequences_with_literals(&mut finder, &input, 50_000, &mut sequences, &mut repeat_offsets);
+        let (second_sequence_count, second_tail_literal_count, _) = find_sequences_with_literals(
+            &mut finder,
+            &input,
+            50_000,
+            &mut sequences,
+            &mut repeat_offsets,
+        );
         let (reaches_into_first_block, second_covered, _) = resolve_and_verify_sequences(
             &input,
             50_000,
@@ -717,8 +735,13 @@ mod tests {
         let mut decoder_history = RepeatOffsets::new();
         let mut sequences = [SequenceRecord::default(); 2];
 
-        let (sequence_count, tail_literal_count, _) =
-            find_sequences_with_literals(&mut finder, &input, 0, &mut sequences, &mut repeat_offsets);
+        let (sequence_count, tail_literal_count, _) = find_sequences_with_literals(
+            &mut finder,
+            &input,
+            0,
+            &mut sequences,
+            &mut repeat_offsets,
+        );
 
         assert!(sequence_count <= 2);
         let (_, covered, resolved_offsets) = resolve_and_verify_sequences(
@@ -742,8 +765,13 @@ mod tests {
         let mut decoder_history = RepeatOffsets::new();
         let mut sequences = vec![SequenceRecord::default(); 4096];
 
-        let (sequence_count, tail_literal_count, _) =
-            find_sequences_with_literals(&mut finder, &input, 0, &mut sequences, &mut repeat_offsets);
+        let (sequence_count, tail_literal_count, _) = find_sequences_with_literals(
+            &mut finder,
+            &input,
+            0,
+            &mut sequences,
+            &mut repeat_offsets,
+        );
         let (_, covered, _) = resolve_and_verify_sequences(
             &input,
             0,
@@ -771,8 +799,13 @@ mod tests {
                 let mut decoder_history = RepeatOffsets::new();
                 let mut sequences = vec![SequenceRecord::default(); input.len() / 2 + 4];
 
-                let (sequence_count, tail_literal_count, _) =
-            find_sequences_with_literals(&mut finder, &input, 0, &mut sequences, &mut repeat_offsets);
+                let (sequence_count, tail_literal_count, _) = find_sequences_with_literals(
+                    &mut finder,
+                    &input,
+                    0,
+                    &mut sequences,
+                    &mut repeat_offsets,
+                );
                 let (_, covered, _) = resolve_and_verify_sequences(
                     &input,
                     0,
@@ -836,13 +869,24 @@ mod tests {
         let mut finder = get_finder_for_input(first_input.len());
         let mut repeat_offsets = RepeatOffsets::new();
         let mut sequences = vec![SequenceRecord::default(); 4096];
-        find_sequences_with_literals(&mut finder, &first_input, 0, &mut sequences, &mut repeat_offsets);
+        find_sequences_with_literals(
+            &mut finder,
+            &first_input,
+            0,
+            &mut sequences,
+            &mut repeat_offsets,
+        );
 
         finder.reset(second_input.len());
         let mut repeat_offsets = RepeatOffsets::new();
         let mut decoder_history = RepeatOffsets::new();
-        let (sequence_count, tail_literal_count, _) =
-            find_sequences_with_literals(&mut finder, &second_input, 0, &mut sequences, &mut repeat_offsets);
+        let (sequence_count, tail_literal_count, _) = find_sequences_with_literals(
+            &mut finder,
+            &second_input,
+            0,
+            &mut sequences,
+            &mut repeat_offsets,
+        );
         let (_, covered, _) = resolve_and_verify_sequences(
             &second_input,
             0,

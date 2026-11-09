@@ -98,7 +98,8 @@ mod tests {
         )
         .unwrap();
         let mut table = FseEncodeTable::new();
-        build_fse_encode_table(&normalized_counts[..counts.len()], accuracy_log, &mut table).unwrap();
+        build_fse_encode_table(&normalized_counts[..counts.len()], accuracy_log, &mut table)
+            .unwrap();
         table
     }
 
